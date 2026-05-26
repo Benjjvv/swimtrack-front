@@ -5,6 +5,74 @@
 
 ---
 
+## Estado del proyecto
+
+**Última actualización:** 2026-05-26
+
+| # | Tarea | Estado | Commit |
+|---|---|---|---|
+| 1 | Esqueleto Flask + 5 páginas + layout base | ✅ Completada | `feat: esqueleto Flask con 5 páginas y layout base` |
+| 2 | Módulos JS compartidos (`lib/`) | ✅ Completada | `feat(lib): módulos JS compartidos (storage, format, metrics, stopwatch)` |
+| 3 | Página Nadadores (CRUD localStorage) | ⏳ Pendiente — **acá retomamos** | — |
+| 4 | Página Historial | ⏳ Pendiente | — |
+| 5 | Monitor parte 1: estructura sin cámara | ⏳ Pendiente | — |
+| 6 | Monitor parte 2: cámara + detección | ⏳ Pendiente | — |
+| 7 | Análisis IA parte 1: métricas | ⏳ Pendiente | — |
+| 8 | Análisis IA parte 2: integración `/api/ai/analyze` | ⏳ Pendiente | — |
+| 9 | Página Demo end-to-end | ⏳ Pendiente | — |
+| 10 | Pulido final + README | ⏳ Pendiente | — |
+
+### Lo que ya existe en el repo
+
+**Backend Flask y configuración:**
+- `app.py` — factory `create_app()` + 5 rutas + endpoint mock `POST /api/ai/analyze`.
+- `config.py` — `DevelopmentConfig` / `ProductionConfig` con `get_config()`.
+- `.env.example`, `.gitignore`, `requirements.txt` (Flask 3, python-dotenv, requests).
+
+**Templates Jinja:**
+- `templates/base.html` — sidebar (5 items con íconos Bootstrap), header con toggle hamburguesa, bloques `content` y `scripts`, todas las URLs con `url_for()`.
+- 5 templates placeholder (`monitor.html`, `swimmers.html`, `history.html`, `analysis.html`, `demo.html`) — extienden `base.html` con `<h1>` + "TODO".
+
+**Static:**
+- `static/css/theme.css` — paleta completa del Apéndice A, layout (`.st-app`, `.st-sidebar`, `.st-main`, `.st-header`, `.st-content`), overrides de Bootstrap (card, form-control, btn-primary, table), responsive mobile.
+- `static/js/app.js` — toggle de sidebar (clase `collapsed` desktop / `open` mobile).
+
+**Módulos JS compartidos (`static/js/lib/`):**
+- `storage.js` — `getItem(key, default)`, `setItem(key, value)`, `removeItem(key)`, `KEYS = {SWIMMERS: 'swimcoach-swimmers', SESSIONS: 'swimcoach-sessions', LANES: 'swimcoach-lanes'}`.
+- `format.js` — `formatTime(ms)` → `"mm:ss.cs"`, `formatDate(isoString)`, `generateId()` (usa `crypto.randomUUID` con fallback).
+- `metrics.js` — `computeSessionMetrics(session)` devuelve `{totalLaps, totalTime, avgLap, bestLap, worstLap, stdDev, consistencyScore, fatigueDelta}`.
+- `stopwatch.js` — clase `Stopwatch` con `start/pause/stop/reset/getElapsed/addLap/removeLap/getLapTimes/isRunning` y callback `onTick(elapsed)`.
+
+### Smoke tests que pasaron
+- `formatTime(83450) === "01:23.45"` ✓ (criterio explícito del plan)
+- `computeSessionMetrics` con 6 largos: `consistencyScore=94.7%`, `fatigueDelta=+3000ms` ✓
+- `Stopwatch.start() / pause()` cambia `isRunning()` correctamente ✓
+- `python -m py_compile app.py config.py` OK ✓
+
+### Próximo paso al retomar
+
+Arrancar **Tarea 3 (Página Nadadores)**. Patrón a repetir en todas las páginas:
+1. Importar `getItem`, `setItem`, `KEYS` de `./lib/storage.js`.
+2. Importar `generateId` de `./lib/format.js`.
+3. Estado en memoria + sync a `localStorage` en cada cambio.
+4. Función `render()` redibuja la UI (sin frameworks).
+5. Cargar el JS con `<script type="module" src="{{ url_for('static', filename='js/swimmers.js') }}"></script>` en el bloque `{% block scripts %}`.
+
+### Aclaración importante sobre el flujo de datos
+
+La IA del compañero **no genera los datos crudos de la app**. Su rol es solo devolver **texto de análisis** (resumen ejecutivo, diagnóstico técnico, respuestas del coach chat).
+
+| Quién genera qué | Cómo |
+|---|---|
+| Nadadores | El usuario los carga manualmente en `/swimmers` (Tarea 3) |
+| Sesiones / tiempos por largo | Cronómetro del Monitor + botones `+/-` (Tareas 5-6) — conteo manual |
+| Detección de personas (cajas) | TensorFlow.js + COCO-SSD en el navegador (Tarea 6), NO la IA del otro repo |
+| Análisis textual / coach | La IA del otro repo vía `/api/ai/analyze` (Tarea 8) |
+
+Re-confirmado en la Tarea 6: "las cajas se dibujan pero NO disparan eventos de 'largo completado'. El usuario sigue contando con +/-." → la cuenta de largos es manual incluso con la IA conectada.
+
+---
+
 ## 0. Contexto del proyecto
 
 **SwimTrack** es un sistema de visión por computadora para entrenamiento de natación. Una cámara fija detecta nadadores, cuenta largos automáticamente y mide tiempos. Libera al entrenador de contar manualmente.
