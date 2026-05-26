@@ -1,0 +1,249 @@
+/* SwimTrack — tema oscuro sobre Bootstrap 5.
+   Paleta del Apéndice A del PLAN.md.
+*/
+
+:root {
+  --st-bg:           hsl(220, 20%, 10%);
+  --st-bg-elev:      hsl(220, 18%, 13%);
+  --st-bg-elev-2:    hsl(220, 15%, 16%);
+  --st-bg-sidebar:   hsl(220, 20%, 8%);
+  --st-border:       hsl(220, 15%, 20%);
+  --st-text:         hsl(200, 20%, 90%);
+  --st-text-muted:   hsl(215, 15%, 55%);
+  --st-primary:      hsl(199, 89%, 48%);
+  --st-primary-fg:   hsl(220, 20%, 5%);
+  --st-accent:       hsl(172, 66%, 50%);
+  --st-success:      hsl(142, 71%, 45%);
+  --st-warning:      hsl(38, 92%, 50%);
+  --st-danger:       hsl(0, 72%, 51%);
+
+  --st-sidebar-w:    240px;
+  --st-sidebar-w-collapsed: 64px;
+  --st-header-h:     56px;
+
+  --st-font-body:    "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --st-font-mono:    "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+
+/* ===== Base ===== */
+html, body {
+  background: var(--st-bg);
+  color: var(--st-text);
+  font-family: var(--st-font-body);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+.text-muted {
+  color: var(--st-text-muted) !important;
+}
+
+code, pre, .st-mono {
+  font-family: var(--st-font-mono);
+}
+
+/* ===== Layout principal ===== */
+.st-app {
+  display: flex;
+  min-height: 100vh;
+}
+
+.st-sidebar {
+  width: var(--st-sidebar-w);
+  background: var(--st-bg-sidebar);
+  border-right: 1px solid var(--st-border);
+  display: flex;
+  flex-direction: column;
+  padding: 1rem 0.5rem;
+  flex-shrink: 0;
+  transition: width 0.2s ease, transform 0.2s ease;
+}
+
+.st-app.sidebar-collapsed .st-sidebar {
+  width: var(--st-sidebar-w-collapsed);
+}
+
+.st-app.sidebar-collapsed .st-brand-name,
+.st-app.sidebar-collapsed .st-nav-link span {
+  display: none;
+}
+
+.st-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem 1.5rem;
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.st-brand i {
+  color: var(--st-primary);
+  font-size: 1.4rem;
+}
+
+.st-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.st-nav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 6px;
+  color: var(--st-text-muted);
+  text-decoration: none;
+  font-weight: 500;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.st-nav-link i {
+  font-size: 1.1rem;
+  min-width: 1.1rem;
+}
+
+.st-nav-link:hover {
+  background: var(--st-bg-elev);
+  color: var(--st-text);
+}
+
+.st-nav-link.active {
+  background: var(--st-bg-elev);
+  color: var(--st-primary);
+}
+
+/* ===== Main ===== */
+.st-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.st-header {
+  height: var(--st-header-h);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0 1.25rem;
+  background: var(--st-bg-elev);
+  border-bottom: 1px solid var(--st-border);
+}
+
+.st-header-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.st-sidebar-toggle {
+  background: transparent;
+  border: 1px solid var(--st-border);
+  color: var(--st-text);
+  border-radius: 6px;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.st-sidebar-toggle:hover {
+  background: var(--st-bg-elev-2);
+}
+
+.st-content {
+  padding: 1.5rem;
+  flex: 1;
+}
+
+/* ===== Bootstrap overrides ===== */
+.card {
+  background: var(--st-bg-elev);
+  border: 1px solid var(--st-border);
+  color: var(--st-text);
+}
+
+.card-header,
+.card-footer {
+  background: var(--st-bg-elev-2);
+  border-color: var(--st-border);
+}
+
+.form-control,
+.form-select {
+  background: var(--st-bg-elev-2);
+  border-color: var(--st-border);
+  color: var(--st-text);
+}
+
+.form-control:focus,
+.form-select:focus {
+  background: var(--st-bg-elev-2);
+  color: var(--st-text);
+  border-color: var(--st-primary);
+  box-shadow: 0 0 0 0.2rem hsla(199, 89%, 48%, 0.25);
+}
+
+.btn-primary {
+  background-color: var(--st-primary);
+  border-color: var(--st-primary);
+  color: var(--st-primary-fg);
+  font-weight: 600;
+}
+
+.btn-primary:hover,
+.btn-primary:focus {
+  background-color: hsl(199, 89%, 42%);
+  border-color: hsl(199, 89%, 42%);
+  color: var(--st-primary-fg);
+}
+
+.btn-outline-primary {
+  color: var(--st-primary);
+  border-color: var(--st-primary);
+}
+
+.btn-outline-primary:hover {
+  background: var(--st-primary);
+  color: var(--st-primary-fg);
+}
+
+.table {
+  --bs-table-bg: transparent;
+  --bs-table-color: var(--st-text);
+  --bs-table-border-color: var(--st-border);
+  --bs-table-striped-bg: var(--st-bg-elev-2);
+  --bs-table-striped-color: var(--st-text);
+  --bs-table-hover-bg: var(--st-bg-elev-2);
+  --bs-table-hover-color: var(--st-text);
+}
+
+/* ===== Responsive ===== */
+@media (max-width: 768px) {
+  .st-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 1040;
+    transform: translateX(-100%);
+  }
+
+  .st-app.sidebar-open .st-sidebar {
+    transform: translateX(0);
+  }
+
+  .st-app.sidebar-collapsed .st-sidebar {
+    width: var(--st-sidebar-w);
+  }
+  .st-app.sidebar-collapsed .st-brand-name,
+  .st-app.sidebar-collapsed .st-nav-link span {
+    display: inline;
+  }
+}
