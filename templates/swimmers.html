@@ -4,6 +4,79 @@
 {% block header_title %}Nadadores{% endblock %}
 
 {% block content %}
-<h1>Nadadores</h1>
-<p class="text-muted">TODO: implementar (Tarea 3).</p>
+<div class="row g-4">
+
+  <!-- Card 1: Agregar Nadador -->
+  <div class="col-12">
+    <div class="card">
+      <div class="card-body">
+        <h2 class="card-title h5 mb-3">
+          <i class="bi bi-person-plus me-2"></i>Agregar Nadador
+        </h2>
+
+        <form id="swimmerForm" class="row g-3 align-items-end" autocomplete="off">
+          <div class="col-12 col-md-5">
+            <label for="swimmerName" class="form-label">Nombre</label>
+            <input type="text" class="form-control" id="swimmerName"
+                   placeholder="Ej. Ana Pérez">
+          </div>
+          <div class="col-6 col-md-2">
+            <label for="swimmerAge" class="form-label">Edad</label>
+            <input type="number" class="form-control" id="swimmerAge"
+                   min="1" max="120" placeholder="—">
+          </div>
+          <div class="col-6 col-md-3">
+            <label for="swimmerLevel" class="form-label">Nivel</label>
+            <select class="form-select" id="swimmerLevel">
+              <option value="principiante">Principiante</option>
+              <option value="intermedio" selected>Intermedio</option>
+              <option value="avanzado">Avanzado</option>
+            </select>
+          </div>
+          <div class="col-12 col-md-2 d-grid gap-2 d-md-block">
+            <button type="submit" class="btn btn-primary">
+              <i class="bi bi-plus-lg"></i> Agregar
+            </button>
+            <button type="button" class="btn btn-outline-secondary" id="addAnonBtn">
+              Anónimo
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Card 2: Nadadores Registrados -->
+  <div class="col-12">
+    <div class="card">
+      <div class="card-body">
+        <h2 class="card-title h5 mb-3">
+          <i class="bi bi-people me-2"></i>Nadadores Registrados
+          (<span id="swimmerCount">0</span>)
+        </h2>
+
+        <div class="table-responsive">
+          <table class="table table-hover align-middle mb-0">
+            <thead>
+              <tr>
+                <th scope="col">Nombre</th>
+                <th scope="col" style="width: 90px;">Edad</th>
+                <th scope="col" style="width: 160px;">Nivel</th>
+                <th scope="col" class="text-end" style="width: 130px;">Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="swimmerTableBody">
+              <!-- render() inyecta las filas -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module" src="{{ url_for('static', filename='js/swimmers.js') }}"></script>
 {% endblock %}

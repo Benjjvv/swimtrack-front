@@ -13,9 +13,9 @@
 |---|---|---|---|
 | 1 | Esqueleto Flask + 5 páginas + layout base | ✅ Completada | `feat: esqueleto Flask con 5 páginas y layout base` |
 | 2 | Módulos JS compartidos (`lib/`) | ✅ Completada | `feat(lib): módulos JS compartidos (storage, format, metrics, stopwatch)` |
-| 3 | Página Nadadores (CRUD localStorage) | ⏳ Pendiente — **acá retomamos** | — |
-| 4 | Página Historial | ⏳ Pendiente | — |
-| 5 | Monitor parte 1: estructura sin cámara | ⏳ Pendiente | — |
+| 3 | Página Nadadores (CRUD localStorage) | ✅ Completada | `feat: página de gestión de nadadores con localStorage` |
+| 4 | Página Historial | ✅ Completada | `feat: página de historial con filtros y expansión de largos` |
+| 5 | Monitor parte 1: estructura sin cámara | ⏳ Pendiente — **acá retomamos** | — |
 | 6 | Monitor parte 2: cámara + detección | ⏳ Pendiente | — |
 | 7 | Análisis IA parte 1: métricas | ⏳ Pendiente | — |
 | 8 | Análisis IA parte 2: integración `/api/ai/analyze` | ⏳ Pendiente | — |
@@ -31,7 +31,13 @@
 
 **Templates Jinja:**
 - `templates/base.html` — sidebar (5 items con íconos Bootstrap), header con toggle hamburguesa, bloques `content` y `scripts`, todas las URLs con `url_for()`.
-- 5 templates placeholder (`monitor.html`, `swimmers.html`, `history.html`, `analysis.html`, `demo.html`) — extienden `base.html` con `<h1>` + "TODO".
+- `templates/swimmers.html` — **implementado** (Tarea 3): card "Agregar Nadador" (form nombre/edad/nivel + botón Anónimo) y card "Nadadores Registrados (N)" con tabla y edición inline.
+- `templates/history.html` — **implementado** (Tarea 4): título + botón "Analizar con IA" (oculto si no hay sesiones), select de filtro por nadador y tabla de sesiones con fila expandible.
+- 3 templates placeholder (`monitor.html`, `analysis.html`, `demo.html`) — extienden `base.html` con `<h1>` + "TODO".
+
+**Páginas con lógica (`static/js/`):**
+- `swimmers.js` — CRUD de nadadores: `addSwimmer(anonymous)`, `deleteSwimmer`, `startEdit/saveEdit/cancelEdit`, `render()`. Delegación de eventos en el `<tbody>`, escape de HTML, Enter=guardar / Escape=cancelar en edición.
+- `history.js` — historial: `visibleSessions()` (filtro + orden por fecha desc), `deleteSession`, `toggleExpand`, `render()`. Filtro poblado desde sesiones+nadadores (incluye nadadores ya borrados), chips de tiempos por largo en la fila expandida.
 
 **Static:**
 - `static/css/theme.css` — paleta completa del Apéndice A, layout (`.st-app`, `.st-sidebar`, `.st-main`, `.st-header`, `.st-content`), overrides de Bootstrap (card, form-control, btn-primary, table), responsive mobile.
@@ -51,7 +57,7 @@
 
 ### Próximo paso al retomar
 
-Arrancar **Tarea 3 (Página Nadadores)**. Patrón a repetir en todas las páginas:
+Arrancar **Tarea 5 (Monitor parte 1: estructura sin cámara)**. El patrón quedó validado en Nadadores e Historial (`static/js/swimmers.js`, `static/js/history.js`): estado en memoria + sync a localStorage + `render()` con delegación de eventos. Patrón a repetir en todas las páginas:
 1. Importar `getItem`, `setItem`, `KEYS` de `./lib/storage.js`.
 2. Importar `generateId` de `./lib/format.js`.
 3. Estado en memoria + sync a `localStorage` en cada cambio.

@@ -4,6 +4,44 @@
 {% block header_title %}Historial{% endblock %}
 
 {% block content %}
-<h1>Historial</h1>
-<p class="text-muted">TODO: implementar (Tarea 4).</p>
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-4">
+  <h2 class="h4 mb-0">Historial de Sesiones</h2>
+  <a href="{{ url_for('analysis') }}" class="btn btn-primary d-none" id="analyzeBtn">
+    <i class="bi bi-graph-up me-1"></i> Analizar con IA
+  </a>
+</div>
+
+<div class="card">
+  <div class="card-body">
+    <div class="row mb-3" id="filterRow">
+      <div class="col-12 col-md-4">
+        <label for="swimmerFilter" class="form-label">Filtrar por nadador</label>
+        <select class="form-select" id="swimmerFilter">
+          <option value="all">Todos</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="table-responsive">
+      <table class="table table-hover align-middle mb-0">
+        <thead>
+          <tr>
+            <th scope="col">Fecha</th>
+            <th scope="col">Nadador</th>
+            <th scope="col" style="width: 90px;">Largos</th>
+            <th scope="col" style="width: 150px;">Tiempo Total</th>
+            <th scope="col" class="text-end" style="width: 120px;">Acciones</th>
+          </tr>
+        </thead>
+        <tbody id="sessionTableBody">
+          <!-- render() inyecta las filas -->
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module" src="{{ url_for('static', filename='js/history.js') }}"></script>
 {% endblock %}
