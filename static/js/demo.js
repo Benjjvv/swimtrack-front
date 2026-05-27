@@ -8,7 +8,7 @@ import { analyze } from './lib/ai-coach.js';
 const DEMO_LAP_TIMES = [20800, 21000, 21300, 21200, 21600, 21900, 22300, 22600, 23100, 23800];
 const TOTAL = DEMO_LAP_TIMES.length;
 // Se cuenta un largo cada 21 s (≈ lo que tarda el nadador en cruzar la piscina en el video).
-const STEP_MS = 21000;
+const STEP_MS = 31000;
 
 const startBtn = document.getElementById('startDemoBtn');
 const lapBadge = document.getElementById('lapBadge');
