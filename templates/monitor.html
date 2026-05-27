@@ -4,6 +4,68 @@
 {% block header_title %}Monitor{% endblock %}
 
 {% block content %}
-<h1>Monitor</h1>
-<p class="text-muted">TODO: implementar (Tarea 5 y 6).</p>
+<div class="row g-4">
+
+  <!-- Columna izquierda: feed de cámara (placeholder; se activa en Tarea 6) -->
+  <div class="col-12 col-lg-6">
+    <div class="card">
+      <div class="card-body">
+        <h2 class="card-title h5 mb-3">
+          <i class="bi bi-camera-video me-2"></i>Cámara
+        </h2>
+
+        <div class="position-relative rounded overflow-hidden mb-3" id="cameraStage"
+             style="aspect-ratio: 16 / 9; background: linear-gradient(160deg, #0b3a52, #0a2230);">
+          <video id="cameraVideo" class="position-absolute top-0 start-0 w-100 h-100 d-none"
+                 style="object-fit: cover;" playsinline muted></video>
+          <img id="demoImage" class="position-absolute top-0 start-0 w-100 h-100 d-none"
+               style="object-fit: cover;" alt="Piscina (demo)"
+               src="{{ url_for('static', filename='img/demo-pool.jpg') }}"
+               onerror="this.classList.add('d-none')">
+          <canvas id="cameraCanvas" class="position-absolute top-0 start-0 w-100 h-100"></canvas>
+          <div id="cameraPlaceholder"
+               class="position-absolute top-50 start-50 translate-middle text-center text-muted px-3">
+            <i class="bi bi-camera-video-off fs-1 d-block mb-2"></i>
+            Cámara no iniciada
+          </div>
+        </div>
+
+        <div class="d-flex flex-wrap gap-2 mb-3">
+          <button class="btn btn-primary" id="startCameraBtn">
+            <i class="bi bi-camera-video"></i> Iniciar Cámara
+          </button>
+          <button class="btn btn-outline-secondary" id="demoModeBtn">
+            <i class="bi bi-collection-play"></i> Modo Demo
+          </button>
+          <button class="btn btn-outline-danger d-none" id="stopCameraBtn">
+            <i class="bi bi-stop-circle"></i> Detener
+          </button>
+        </div>
+
+        <div class="text-muted">
+          <i class="bi bi-people me-1"></i>
+          <span id="detectionCount">0</span> persona(s) detectada(s)
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Columna derecha: pistas y controles -->
+  <div class="col-12 col-lg-6">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h2 class="h5 mb-0">Pistas</h2>
+      <button class="btn btn-sm btn-primary" id="addLaneBtn">
+        <i class="bi bi-plus-lg"></i> Agregar Pista
+      </button>
+    </div>
+    <div id="lanesContainer" class="d-flex flex-column gap-3">
+      <!-- render() inyecta las Lane Cards -->
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module" src="{{ url_for('static', filename='js/monitor.js') }}"></script>
 {% endblock %}

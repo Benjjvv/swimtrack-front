@@ -15,9 +15,9 @@
 | 2 | Módulos JS compartidos (`lib/`) | ✅ Completada | `feat(lib): módulos JS compartidos (storage, format, metrics, stopwatch)` |
 | 3 | Página Nadadores (CRUD localStorage) | ✅ Completada | `feat: página de gestión de nadadores con localStorage` |
 | 4 | Página Historial | ✅ Completada | `feat: página de historial con filtros y expansión de largos` |
-| 5 | Monitor parte 1: estructura sin cámara | ⏳ Pendiente — **acá retomamos** | — |
-| 6 | Monitor parte 2: cámara + detección | ⏳ Pendiente | — |
-| 7 | Análisis IA parte 1: métricas | ⏳ Pendiente | — |
+| 5 | Monitor parte 1: estructura sin cámara | ✅ Completada | `feat: monitor (estructura, pistas, cronómetro y conteo de largos)` |
+| 6 | Monitor parte 2: cámara + detección | ✅ Completada | `feat: monitor con cámara y detección COCO-SSD` |
+| 7 | Análisis IA parte 1: métricas | ⏳ Pendiente — **acá retomamos** | — |
 | 8 | Análisis IA parte 2: integración `/api/ai/analyze` | ⏳ Pendiente | — |
 | 9 | Página Demo end-to-end | ⏳ Pendiente | — |
 | 10 | Pulido final + README | ⏳ Pendiente | — |
@@ -33,11 +33,18 @@
 - `templates/base.html` — sidebar (5 items con íconos Bootstrap), header con toggle hamburguesa, bloques `content` y `scripts`, todas las URLs con `url_for()`.
 - `templates/swimmers.html` — **implementado** (Tarea 3): card "Agregar Nadador" (form nombre/edad/nivel + botón Anónimo) y card "Nadadores Registrados (N)" con tabla y edición inline.
 - `templates/history.html` — **implementado** (Tarea 4): título + botón "Analizar con IA" (oculto si no hay sesiones), select de filtro por nadador y tabla de sesiones con fila expandible.
-- 3 templates placeholder (`monitor.html`, `analysis.html`, `demo.html`) — extienden `base.html` con `<h1>` + "TODO".
+- `templates/monitor.html` — **implementado** (Tareas 5 y 6): columna izquierda con stage de cámara (`<video>` + `<img>` demo + `<canvas>` superpuesto) y botones Iniciar/Modo Demo/Detener + contador de personas; columna derecha con `#lanesContainer` + botón "Agregar Pista".
+- 2 templates placeholder (`analysis.html`, `demo.html`) — extienden `base.html` con `<h1>` + "TODO".
 
 **Páginas con lógica (`static/js/`):**
 - `swimmers.js` — CRUD de nadadores: `addSwimmer(anonymous)`, `deleteSwimmer`, `startEdit/saveEdit/cancelEdit`, `render()`. Delegación de eventos en el `<tbody>`, escape de HTML, Enter=guardar / Escape=cancelar en edición.
 - `history.js` — historial: `visibleSessions()` (filtro + orden por fecha desc), `deleteSession`, `toggleExpand`, `render()`. Filtro poblado desde sesiones+nadadores (incluye nadadores ya borrados), chips de tiempos por largo en la fila expandida.
+- `monitor.js` (290 líneas) — pistas + controles. `Map` de `Stopwatch` persistentes por `laneId::swimmerId`; `onTick` actualiza solo el `[data-timer]` vía querySelector, así `render()` reconstruye el DOM sin matar los timers. Demo mode si no hay nadadores (`DEMO_SWIMMERS`/`DEMO_LANES`, no persiste pistas). `saveSession` arma la `Session` desde `getLapTimes()` y la guarda en `swimcoach-sessions` (aparece en Historial). Modo Pirámide deshabilitado con tooltip nativo. La cámara se delega a `lib/camera-panel.js` (ver abajo).
+
+**Módulos JS de cámara/detección (`static/js/lib/`, Tarea 6):**
+- `camera.js` — clase `CameraController` (`start(videoEl)`/`stop()`/`isActive()`), `getUserMedia` 1280×720 `facingMode:'environment'`, maneja permiso denegado / sin cámara.
+- `detection.js` — `loadCocoSsd()` (inyecta los `<script>` UMD de TF.js 4.20 + COCO-SSD 2.2.3 del CDN bajo demanda, cachea el modelo), clase `DetectionLoop(model).start(videoEl, onDetections)/stop()` (filtra `person` con score > 0.4), y helpers `drawDetections(canvas, source, dets)` / `clearCanvas(canvas)`.
+- `camera-panel.js` — **módulo extra, no estaba en el plan original**: `initCameraPanel()` cablea los botones del Monitor y el contador. Se creó porque meter ese glue (~55 líneas) en `monitor.js` lo pasaba de 300; el PLAN manda refactorizar a `lib/` al tocar el límite. Incluye `DEMO_DETECTIONS` (3 cajas) para el Modo Demo.
 
 **Static:**
 - `static/css/theme.css` — paleta completa del Apéndice A, layout (`.st-app`, `.st-sidebar`, `.st-main`, `.st-header`, `.st-content`), overrides de Bootstrap (card, form-control, btn-primary, table), responsive mobile.
@@ -57,7 +64,7 @@
 
 ### Próximo paso al retomar
 
-Arrancar **Tarea 5 (Monitor parte 1: estructura sin cámara)**. El patrón quedó validado en Nadadores e Historial (`static/js/swimmers.js`, `static/js/history.js`): estado en memoria + sync a localStorage + `render()` con delegación de eventos. Patrón a repetir en todas las páginas:
+Arrancar **Tarea 7 (Análisis IA parte 1: métricas)**. Selectores nadador/sesión + 4 cards de métricas calculadas en cliente con `computeSessionMetrics` de `lib/metrics.js`. Sin llamada a la IA todavía (eso es Tarea 8, que crea `lib/ai-coach.js`). El patrón de páginas quedó validado en Nadadores, Historial y Monitor: estado en memoria + sync a localStorage + `render()` con delegación de eventos. Patrón a repetir:
 1. Importar `getItem`, `setItem`, `KEYS` de `./lib/storage.js`.
 2. Importar `generateId` de `./lib/format.js`.
 3. Estado en memoria + sync a `localStorage` en cada cambio.
