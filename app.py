@@ -11,6 +11,27 @@ from flask import Flask, jsonify, render_template, request
 from config import get_config
 
 
+class PrefixMiddleware:
+    """Monta la app bajo URL_PREFIX (ej. /swimtrack) cuando se sirve detrás de Apache.
+
+    Apache hace ProxyPass /swimtrack/ -> localhost:PORT/swimtrack/ (preserva el path),
+    así que movemos el prefijo de PATH_INFO a SCRIPT_NAME: el ruteo matchea las rutas
+    en "/" y url_for() genera automáticamente las URLs con el prefijo (links + /static).
+    En local (URL_PREFIX="/") el middleware ni se instala.
+    """
+
+    def __init__(self, wsgi_app, prefix=""):
+        self.wsgi_app = wsgi_app
+        self.prefix = "/" + prefix.strip("/")
+
+    def __call__(self, environ, start_response):
+        path = environ.get("PATH_INFO", "")
+        if path == self.prefix or path.startswith(self.prefix + "/"):
+            environ["PATH_INFO"] = path[len(self.prefix):] or "/"
+            environ["SCRIPT_NAME"] = self.prefix
+        return self.wsgi_app(environ, start_response)
+
+
 def _mock_analysis(payload):
     """Texto de análisis simulado cuando la IA real no está disponible."""
     mode = payload.get("mode", "summary")
@@ -47,6 +68,11 @@ def _mock_analysis(payload):
 def create_app():
     app = Flask(__name__)
     app.config.from_object(get_config())
+
+    # En producción (URL_PREFIX != "/") montamos la app bajo el subpath de Apache.
+    prefix = app.config.get("URL_PREFIX", "/")
+    if prefix and prefix.strip("/"):
+        app.wsgi_app = PrefixMiddleware(app.wsgi_app, prefix)
 
     @app.route("/")
     def monitor():
