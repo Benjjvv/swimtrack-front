@@ -4,6 +4,85 @@
 {% block header_title %}Análisis IA{% endblock %}
 
 {% block content %}
-<h1>Análisis IA</h1>
-<p class="text-muted">TODO: implementar (Tareas 7 y 8).</p>
+<!-- Estado vacío -->
+<div id="analysisEmpty" class="card d-none">
+  <div class="card-body text-center text-muted py-5">
+    <i class="bi bi-graph-up fs-1 d-block mb-2"></i>
+    Aún no hay sesiones registradas. Guardá una desde el Monitor.
+  </div>
+</div>
+
+<div id="analysisMain" class="d-none">
+  <!-- Selectores -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12 col-md-6">
+          <label for="swimmerSelect" class="form-label">Nadador</label>
+          <select id="swimmerSelect" class="form-select"></select>
+        </div>
+        <div class="col-12 col-md-6">
+          <label for="sessionSelect" class="form-label">Sesión</label>
+          <select id="sessionSelect" class="form-select"></select>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Métricas -->
+  <div class="row g-3 mb-4">
+    <div class="col-6 col-lg-3">
+      <div class="card h-100"><div class="card-body text-center">
+        <div class="text-muted small mb-1">Largos totales</div>
+        <div class="fs-3 fw-semibold" id="mLaps">—</div>
+      </div></div>
+    </div>
+    <div class="col-6 col-lg-3">
+      <div class="card h-100"><div class="card-body text-center">
+        <div class="text-muted small mb-1">Promedio / largo</div>
+        <div class="fs-3 fw-semibold font-monospace" id="mAvg">—</div>
+      </div></div>
+    </div>
+    <div class="col-6 col-lg-3">
+      <div class="card h-100"><div class="card-body text-center">
+        <div class="text-muted small mb-1">Consistencia</div>
+        <div class="fs-3 fw-semibold" id="mConsistency">—</div>
+      </div></div>
+    </div>
+    <div class="col-6 col-lg-3">
+      <div class="card h-100"><div class="card-body text-center">
+        <div class="text-muted small mb-1">Fatiga (2ª mitad)</div>
+        <div class="fs-3 fw-semibold font-monospace" id="mFatigue">—</div>
+      </div></div>
+    </div>
+  </div>
+
+  <!-- Coach IA -->
+  <div class="card mb-4">
+    <div class="card-body">
+      <h2 class="h5 mb-3"><i class="bi bi-robot me-2"></i>Coach IA</h2>
+      <div class="d-flex flex-wrap gap-2 mb-3">
+        <button class="btn btn-primary" id="summaryBtn">Resumen ejecutivo</button>
+        <button class="btn btn-outline-primary" id="diagnosisBtn">Diagnóstico técnico</button>
+      </div>
+      <div id="aiOutput" class="text-muted" style="white-space: pre-wrap;">Elegí una sesión y pedí un análisis.</div>
+    </div>
+  </div>
+
+  <!-- Chat -->
+  <div class="card">
+    <div class="card-body">
+      <h2 class="h5 mb-3"><i class="bi bi-chat-dots me-2"></i>Pregúntale al Coach</h2>
+      <div id="chatLog" class="d-flex flex-column gap-2 mb-3"></div>
+      <form id="chatForm" class="input-group" autocomplete="off">
+        <input type="text" id="chatInput" class="form-control" placeholder="Escribí tu pregunta…">
+        <button class="btn btn-primary" type="submit" id="chatSend">Enviar</button>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script type="module" src="{{ url_for('static', filename='js/analysis.js') }}"></script>
 {% endblock %}

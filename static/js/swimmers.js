@@ -3,6 +3,7 @@
 
 import { getItem, setItem, KEYS } from './lib/storage.js';
 import { generateId } from './lib/format.js';
+import { showToast } from './lib/toast.js';
 
 /**
  * @typedef {Object} Swimmer
@@ -99,6 +100,7 @@ function addSwimmer(anonymous) {
     nameInput.focus();
   }
   render();
+  showToast(anonymous ? 'Nadador anónimo agregado' : 'Nadador agregado');
 }
 
 /** Elimina un nadador por id. @param {string} id */
@@ -107,6 +109,7 @@ function deleteSwimmer(id) {
   if (editingId === id) editingId = null;
   persist();
   render();
+  showToast('Nadador eliminado', 'secondary');
 }
 
 /** Pone una fila en modo edición. @param {string} id */
@@ -142,6 +145,7 @@ function saveEdit(id) {
   editingId = null;
   persist();
   render();
+  showToast('Cambios guardados');
 }
 
 // --- Render ---

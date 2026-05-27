@@ -17,15 +17,17 @@
 | 4 | Página Historial | ✅ Completada | `feat: página de historial con filtros y expansión de largos` |
 | 5 | Monitor parte 1: estructura sin cámara | ✅ Completada | `feat: monitor (estructura, pistas, cronómetro y conteo de largos)` |
 | 6 | Monitor parte 2: cámara + detección | ✅ Completada | `feat: monitor con cámara y detección COCO-SSD` |
-| 7 | Análisis IA parte 1: métricas | ⏳ Pendiente — **acá retomamos** | — |
-| 8 | Análisis IA parte 2: integración `/api/ai/analyze` | ⏳ Pendiente | — |
-| 9 | Página Demo end-to-end | ⏳ Pendiente | — |
-| 10 | Pulido final + README | ⏳ Pendiente | — |
+| 7 | Análisis IA parte 1: métricas | ✅ Completada | `feat: análisis (selectores y métricas calculadas en cliente)` |
+| 8 | Análisis IA parte 2: integración `/api/ai/analyze` | ✅ Completada | `feat: integración con módulo IA vía /api/ai/analyze` |
+| 9 | Página Demo end-to-end | ✅ Completada | `feat: página demo end-to-end auto-contenida` |
+| 10 | Pulido final + README | ✅ Completada | `chore: pulido final, accesibilidad y README` |
+
+> **🎉 Las 10 tareas están code-complete.** Falta verificación en navegador (ver nota al final) — el entorno de esta máquina no tiene Flask/venv instalable. Los commits los hace el usuario.
 
 ### Lo que ya existe en el repo
 
 **Backend Flask y configuración:**
-- `app.py` — factory `create_app()` + 5 rutas + endpoint mock `POST /api/ai/analyze`.
+- `app.py` — factory `create_app()` + 5 rutas + `POST /api/ai/analyze` que **proxea al Flask de IA** (`IA_BASE_URL/analyze` con header `X-Swimtrack-Auth`) y cae a `_mock_analysis(payload)` si la IA falla/timeout/no-JSON.
 - `config.py` — `DevelopmentConfig` / `ProductionConfig` con `get_config()`.
 - `.env.example`, `.gitignore`, `requirements.txt` (Flask 3, python-dotenv, requests).
 
@@ -34,12 +36,16 @@
 - `templates/swimmers.html` — **implementado** (Tarea 3): card "Agregar Nadador" (form nombre/edad/nivel + botón Anónimo) y card "Nadadores Registrados (N)" con tabla y edición inline.
 - `templates/history.html` — **implementado** (Tarea 4): título + botón "Analizar con IA" (oculto si no hay sesiones), select de filtro por nadador y tabla de sesiones con fila expandible.
 - `templates/monitor.html` — **implementado** (Tareas 5 y 6): columna izquierda con stage de cámara (`<video>` + `<img>` demo + `<canvas>` superpuesto) y botones Iniciar/Modo Demo/Detener + contador de personas; columna derecha con `#lanesContainer` + botón "Agregar Pista".
-- 2 templates placeholder (`analysis.html`, `demo.html`) — extienden `base.html` con `<h1>` + "TODO".
+- `templates/analysis.html` — **implementado** (Tareas 7 y 8): estado vacío, selectores nadador/sesión, 4 cards de métricas, card Coach IA (resumen/diagnóstico) y card de chat.
+- `templates/demo.html` — **implementado** (Tarea 9): piscina con badge "Largo N / 10", grilla de 10 tiempos, card de análisis IA al final.
+- `templates/base.html` — además del layout, ahora incluye `<meta name="st-analyze-url">` (URL del endpoint vía `url_for`, para soportar subpath) y el `#toastContainer`.
 
 **Páginas con lógica (`static/js/`):**
 - `swimmers.js` — CRUD de nadadores: `addSwimmer(anonymous)`, `deleteSwimmer`, `startEdit/saveEdit/cancelEdit`, `render()`. Delegación de eventos en el `<tbody>`, escape de HTML, Enter=guardar / Escape=cancelar en edición.
 - `history.js` — historial: `visibleSessions()` (filtro + orden por fecha desc), `deleteSession`, `toggleExpand`, `render()`. Filtro poblado desde sesiones+nadadores (incluye nadadores ya borrados), chips de tiempos por largo en la fila expandida.
-- `monitor.js` (290 líneas) — pistas + controles. `Map` de `Stopwatch` persistentes por `laneId::swimmerId`; `onTick` actualiza solo el `[data-timer]` vía querySelector, así `render()` reconstruye el DOM sin matar los timers. Demo mode si no hay nadadores (`DEMO_SWIMMERS`/`DEMO_LANES`, no persiste pistas). `saveSession` arma la `Session` desde `getLapTimes()` y la guarda en `swimcoach-sessions` (aparece en Historial). Modo Pirámide deshabilitado con tooltip nativo. La cámara se delega a `lib/camera-panel.js` (ver abajo).
+- `monitor.js` (291 líneas) — pistas + controles. `Map` de `Stopwatch` persistentes por `laneId::swimmerId`; `onTick` actualiza solo el `[data-timer]` vía querySelector, así `render()` reconstruye el DOM sin matar los timers. Demo mode si no hay nadadores (`DEMO_SWIMMERS`/`DEMO_LANES`, no persiste pistas). `saveSession` arma la `Session` desde `getLapTimes()` y la guarda en `swimcoach-sessions` (aparece en Historial) + toast. Modo Pirámide deshabilitado con tooltip nativo. La cámara se delega a `lib/camera-panel.js` (ver abajo).
+- `analysis.js` (197 líneas) — lee swimmers+sessions, selectores nadador/sesión, 4 cards de métricas con `computeSessionMetrics` (fatiga en rojo si > 1500 ms), botones Resumen/Diagnóstico y chat que llaman a `analyze()` de `lib/ai-coach.js`. Estado vacío si no hay sesiones.
+- `demo.js` (96 líneas) — 10 tiempos hardcodeados, `setInterval` cada 1.5 s revela los largos, al terminar muestra la card de IA y llama a `analyze({mode:'summary'})`. Botón pasa a "Reiniciar demo".
 
 **Módulos JS de cámara/detección (`static/js/lib/`, Tarea 6):**
 - `camera.js` — clase `CameraController` (`start(videoEl)`/`stop()`/`isActive()`), `getUserMedia` 1280×720 `facingMode:'environment'`, maneja permiso denegado / sin cámara.
@@ -55,6 +61,8 @@
 - `format.js` — `formatTime(ms)` → `"mm:ss.cs"`, `formatDate(isoString)`, `generateId()` (usa `crypto.randomUUID` con fallback).
 - `metrics.js` — `computeSessionMetrics(session)` devuelve `{totalLaps, totalTime, avgLap, bestLap, worstLap, stdDev, consistencyScore, fatigueDelta}`.
 - `stopwatch.js` — clase `Stopwatch` con `start/pause/stop/reset/getElapsed/addLap/removeLap/getLapTimes/isRunning` y callback `onTick(elapsed)`.
+- `ai-coach.js` (Tarea 8) — `analyze(payload)` hace `POST` a la URL del `<meta st-analyze-url>`, timeout 30 s con `AbortController`, devuelve `{ok, analysis, mock, error}`.
+- `toast.js` (Tarea 10) — `showToast(message, type)` crea un toast de Bootstrap en `#toastContainer` (usa `textContent`, sin riesgo de inyección).
 
 ### Smoke tests que pasaron
 - `formatTime(83450) === "01:23.45"` ✓ (criterio explícito del plan)
@@ -64,12 +72,22 @@
 
 ### Próximo paso al retomar
 
-Arrancar **Tarea 7 (Análisis IA parte 1: métricas)**. Selectores nadador/sesión + 4 cards de métricas calculadas en cliente con `computeSessionMetrics` de `lib/metrics.js`. Sin llamada a la IA todavía (eso es Tarea 8, que crea `lib/ai-coach.js`). El patrón de páginas quedó validado en Nadadores, Historial y Monitor: estado en memoria + sync a localStorage + `render()` con delegación de eventos. Patrón a repetir:
-1. Importar `getItem`, `setItem`, `KEYS` de `./lib/storage.js`.
-2. Importar `generateId` de `./lib/format.js`.
-3. Estado en memoria + sync a `localStorage` en cada cambio.
-4. Función `render()` redibuja la UI (sin frameworks).
-5. Cargar el JS con `<script type="module" src="{{ url_for('static', filename='js/swimmers.js') }}"></script>` en el bloque `{% block scripts %}`.
+**Todas las tareas (1-10) están code-complete.** Lo único pendiente es **verificación manual en navegador**, que no se pudo hacer en esta máquina (Python 3.12 sin `pip`/`venv`/`ensurepip`; falta `python3.12-venv` o `pip`). Para verificar, en una máquina con Flask:
+
+```bash
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt && cp .env.example .env
+flask --app app run --port 7001 --debug   # http://localhost:7001
+```
+
+Checklist de verificación (criterios de aceptación de cada tarea):
+- **Nadadores:** agregar / anónimo / editar inline / eliminar / persiste al refrescar.
+- **Monitor:** demo con 2 pistas × 2 nadadores; cronómetro +/- largos; Guardar Sesión → aparece en Historial (toast). Cámara pide permiso (localhost) y dibuja cajas tras ~3 s; Modo Demo dibuja 3 cajas sin internet.
+- **Historial:** filtro por nadador, expandir largos, eliminar.
+- **Análisis:** selectores, 4 métricas (fatiga roja si > 1500 ms), botones IA y chat muestran el texto (mock si la IA no está arriba).
+- **Demo:** corre 10 largos en ~15 s y muestra el análisis al final.
+
+> Validaciones automáticas que sí corrieron: `node --check` en los 15 JS (OK), todos < 300 líneas, `py_compile app.py config.py` (OK), sin imports absolutos ni URLs hardcodeadas en templates.
 
 ### Aclaración importante sobre el flujo de datos
 

@@ -5,6 +5,7 @@ import { getItem, setItem, KEYS } from './lib/storage.js';
 import { generateId, formatTime } from './lib/format.js';
 import { Stopwatch } from './lib/stopwatch.js';
 import { initCameraPanel } from './lib/camera-panel.js';
+import { showToast } from './lib/toast.js';
 
 // --- Datos de demo (se usan si no hay nadadores registrados) ---
 const DEMO_SWIMMERS = [
@@ -129,7 +130,7 @@ function saveSession(laneId, swimmerId) {
   const sw = getControl(key);
   const laps = sw.getLapTimes();
   if (laps.length === 0) {
-    alert('Registrá al menos un largo (botón +) antes de guardar la sesión.');
+    showToast('Registrá al menos un largo (botón +) antes de guardar.', 'warning');
     return;
   }
   const session = {
@@ -146,7 +147,7 @@ function saveSession(laneId, swimmerId) {
   setItem(KEYS.SESSIONS, sessions);
   sw.reset();
   render();
-  alert(`Sesión de ${session.swimmerName} guardada (${session.laps} largos). Vela en Historial.`);
+  showToast(`Sesión de ${session.swimmerName} guardada (${session.laps} largos). Vela en Historial.`);
 }
 
 // --- Render ---

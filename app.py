@@ -5,9 +5,43 @@ Si la IA no responde, el endpoint devuelve un mock.
 """
 import os
 
-from flask import Flask, jsonify, render_template
+import requests
+from flask import Flask, jsonify, render_template, request
 
 from config import get_config
+
+
+def _mock_analysis(payload):
+    """Texto de análisis simulado cuando la IA real no está disponible."""
+    mode = payload.get("mode", "summary")
+    metrics = payload.get("metrics") or {}
+    name = payload.get("swimmerName") or "el nadador"
+
+    if mode == "chat":
+        messages = payload.get("messages") or []
+        last = messages[-1].get("content", "") if messages else ""
+        return (
+            f"(Coach IA simulado) Sobre «{last}»: cuando el módulo de IA real "
+            "esté conectado vas a recibir una respuesta basada en los tiempos de "
+            "la sesión. Por ahora esto es un mock del frontend."
+        )
+
+    laps = metrics.get("totalLaps", "?")
+    consistency = metrics.get("consistencyScore")
+    fatigue = metrics.get("fatigueDelta")
+    cons_txt = f"{consistency:.0f}%" if isinstance(consistency, (int, float)) else "s/d"
+    fat_txt = (
+        "muestra fatiga en la segunda mitad"
+        if isinstance(fatigue, (int, float)) and fatigue > 1500
+        else "mantiene un ritmo parejo"
+    )
+    encabezado = "Resumen ejecutivo" if mode == "summary" else "Diagnóstico técnico"
+    return (
+        f"({encabezado} simulado — la IA real aún no está conectada.)\n\n"
+        f"{name} completó {laps} largos con una consistencia del {cons_txt} y "
+        f"{fat_txt}. Recomendación de ejemplo: trabajar técnica de viraje y "
+        "controlar el ritmo en los últimos largos."
+    )
 
 
 def create_app():
@@ -36,13 +70,31 @@ def create_app():
 
     @app.route("/api/ai/analyze", methods=["POST"])
     def ai_analyze():
-        # En la Tarea 8 se conecta con el Flask de IA real.
-        # Por ahora devuelve un mock para no bloquear el desarrollo.
-        return jsonify({
-            "ok": True,
-            "mock": True,
-            "analysis": "Pendiente — implementar en tarea 8",
-        })
+        """Proxy hacia el Flask de IA. Si falla, devuelve un mock."""
+        payload = request.get_json(silent=True) or {}
+        base = (app.config.get("IA_BASE_URL") or "").rstrip("/")
+        secret = app.config.get("IA_SECRET_HEADER", "")
+        try:
+            resp = requests.post(
+                f"{base}/analyze",
+                json=payload,
+                headers={"X-Swimtrack-Auth": secret},
+                timeout=8,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return jsonify({
+                "ok": True,
+                "mock": False,
+                "analysis": data.get("analysis", data.get("text", "")),
+            })
+        except (requests.RequestException, ValueError):
+            # IA caída, timeout o respuesta no-JSON: mock para no bloquear el front.
+            return jsonify({
+                "ok": True,
+                "mock": True,
+                "analysis": _mock_analysis(payload),
+            })
 
     return app
 

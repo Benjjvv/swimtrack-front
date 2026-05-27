@@ -3,6 +3,7 @@
 
 import { getItem, setItem, KEYS } from './lib/storage.js';
 import { formatTime, formatDate } from './lib/format.js';
+import { showToast } from './lib/toast.js';
 
 /**
  * @typedef {Object} LapTime
@@ -59,6 +60,7 @@ function deleteSession(id) {
   if (expandedId === id) expandedId = null;
   setItem(KEYS.SESSIONS, sessions);
   render();
+  showToast('Sesión eliminada', 'secondary');
 }
 
 /** Expande/colapsa la fila de una sesión. @param {string} id */
