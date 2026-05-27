@@ -14,6 +14,8 @@ const lapBadge = document.getElementById('lapBadge');
 const lapGrid = document.getElementById('lapGrid');
 const aiCard = document.getElementById('aiCard');
 const aiOutput = document.getElementById('demoAiOutput');
+const videoSelect = document.getElementById('videoSelect');
+const demoVideo = document.getElementById('demoVideo');
 
 let timerId = null;
 
@@ -80,6 +82,10 @@ function startDemo() {
   setBadge(0);
   renderGrid(0);
 
+  // Reproduce el video seleccionado mientras corre la simulación de largos.
+  demoVideo.currentTime = 0;
+  demoVideo.play().catch(() => {});
+
   timerId = setInterval(() => {
     current += 1;
     setBadge(current);
@@ -92,5 +98,31 @@ function startDemo() {
   }, STEP_MS);
 }
 
+// Carga en el <video> la fuente elegida en el selector.
+function loadVideo() {
+  demoVideo.src = videoSelect.value;
+  demoVideo.load();
+}
+
+// Vuelve la demo al estado inicial (al cambiar de video).
+function resetDemo() {
+  if (timerId) {
+    clearInterval(timerId);
+    timerId = null;
+  }
+  demoVideo.pause();
+  startBtn.disabled = false;
+  startBtn.innerHTML = '<i class="bi bi-play-fill"></i> Iniciar demo';
+  aiCard.classList.add('d-none');
+  setBadge(0);
+  renderGrid(0);
+}
+
+videoSelect.addEventListener('change', () => {
+  loadVideo();
+  resetDemo();
+});
 startBtn.addEventListener('click', startDemo);
+
+loadVideo();
 renderGrid(0);

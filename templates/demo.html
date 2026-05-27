@@ -14,11 +14,17 @@
   <div class="col-12 col-lg-6">
     <div class="card h-100">
       <div class="card-body d-flex flex-column">
+        <div class="mb-3">
+          <label for="videoSelect" class="form-label">Video</label>
+          <select id="videoSelect" class="form-select">
+            <option value="{{ url_for('static', filename='video/demo1.mp4') }}">Video 1</option>
+            <option value="{{ url_for('static', filename='video/demo2.mp4') }}">Video 2</option>
+          </select>
+        </div>
         <div class="position-relative rounded overflow-hidden mb-3"
              style="aspect-ratio: 16 / 9; background: linear-gradient(160deg, #0b3a52, #0a2230);">
-          <img src="{{ url_for('static', filename='img/demo-pool.jpg') }}" alt="Piscina (demo)"
-               class="position-absolute top-0 start-0 w-100 h-100" style="object-fit: cover;"
-               onerror="this.classList.add('d-none')">
+          <video id="demoVideo" class="position-absolute top-0 start-0 w-100 h-100"
+                 style="object-fit: cover;" muted playsinline loop preload="metadata"></video>
           <span class="badge text-bg-primary position-absolute top-0 end-0 m-2 fs-6" id="lapBadge">
             Largo 0 / 10
           </span>
