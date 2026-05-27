@@ -4,10 +4,11 @@ import { formatTime } from './lib/format.js';
 import { computeSessionMetrics } from './lib/metrics.js';
 import { analyze } from './lib/ai-coach.js';
 
-// Tiempos hardcodeados (ms): ritmo que se degrada (fatiga) hacia el final.
-const DEMO_LAP_TIMES = [31200, 31800, 32100, 32500, 32400, 33000, 33500, 34100, 34800, 35500];
+// Tiempos hardcodeados (ms): ~21 s por largo con ritmo que se degrada (fatiga) hacia el final.
+const DEMO_LAP_TIMES = [20800, 21000, 21300, 21200, 21600, 21900, 22300, 22600, 23100, 23800];
 const TOTAL = DEMO_LAP_TIMES.length;
-const STEP_MS = 1500;
+// Se cuenta un largo cada 21 s (≈ lo que tarda el nadador en cruzar la piscina en el video).
+const STEP_MS = 21000;
 
 const startBtn = document.getElementById('startDemoBtn');
 const lapBadge = document.getElementById('lapBadge');
