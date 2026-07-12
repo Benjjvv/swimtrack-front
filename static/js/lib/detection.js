@@ -117,7 +117,10 @@ export function drawDetections(canvas, source, detections) {
     ctx.strokeStyle = '#22c55e';
     ctx.strokeRect(x, y, w, h);
 
-    const label = `Nadador ${i + 1} (${Math.round((d.score || 0) * 100)}%)`;
+    // Etiqueta con el id real si es numérico (detección server/playback);
+    // si no (cámara/demo usan ids string), caemos al índice.
+    const n = typeof d.id === 'number' ? d.id : i + 1;
+    const label = `Nadador ${n} (${Math.round((d.score || 0) * 100)}%)`;
     const th = fontPx + 6;
     const tw = ctx.measureText(label).width + 8;
     const labelY = Math.max(0, y - th);

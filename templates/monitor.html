@@ -37,14 +37,21 @@
           <button class="btn btn-outline-secondary" id="demoModeBtn">
             <i class="bi bi-collection-play"></i> Modo Demo
           </button>
+          <button class="btn btn-outline-secondary" id="uploadVideoBtn">
+            <i class="bi bi-upload"></i> Subir Video
+          </button>
           <button class="btn btn-outline-danger d-none" id="stopCameraBtn">
             <i class="bi bi-stop-circle"></i> Detener
           </button>
+          <input type="file" id="videoFileInput" accept="video/*" class="d-none"
+                 data-detect-url="{{ url_for('detect') }}">
         </div>
 
         <div class="text-muted">
           <i class="bi bi-people me-1"></i>
-          <span id="detectionCount">0</span> persona(s) detectada(s)
+          <span class="st-count position-relative">
+            <span id="detectionCount">0</span>
+          </span> persona(s) detectada(s)
         </div>
       </div>
     </div>

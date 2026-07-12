@@ -1,9 +1,12 @@
-// Panel de cámara del Monitor: enchufa CameraController + DetectionLoop + dibujo de cajas.
-// Widget autónomo (solo toca sus propios elementos del DOM) para no inflar monitor.js,
-// que está al límite de 300 líneas que impone el PLAN.
+// Panel de cámara del Monitor: enchufa CameraController + DetectionLoop + dibujo
+// de cajas, y ofrece "Subir Video" como alternativa a la cámara. Widget autónomo
+// (solo toca sus propios elementos del DOM) para no inflar monitor.js, que está
+// al límite de 300 líneas que impone el PLAN.
 
 import { CameraController } from './camera.js';
 import { loadCocoSsd, DetectionLoop, drawDetections, clearCanvas } from './detection.js';
+import { DetectionPlayback } from './detection-playback.js';
+import { createCounter } from './count-badge.js';
 
 // Detecciones simuladas para "Modo Demo" (coords sobre un lienzo de 1280×720).
 const DEMO_DETECTIONS = [
@@ -12,7 +15,7 @@ const DEMO_DETECTIONS = [
   { id: 'd3', bbox: [880, 120, 250, 150], score: 0.81, class: 'person' },
 ];
 
-/** Cablea los botones Iniciar/Demo/Detener y el contador de personas detectadas. */
+/** Cablea los botones Iniciar/Demo/Subir Video/Detener y el contador de personas. */
 export function initCameraPanel() {
   const video = document.getElementById('cameraVideo');
   const img = document.getElementById('demoImage');
@@ -22,22 +25,27 @@ export function initCameraPanel() {
   const startBtn = document.getElementById('startCameraBtn');
   const demoBtn = document.getElementById('demoModeBtn');
   const stopBtn = document.getElementById('stopCameraBtn');
+  const uploadBtn = document.getElementById('uploadVideoBtn');
+  const fileInput = document.getElementById('videoFileInput');
   if (!video || !startBtn) return; // no estamos en la página Monitor
 
   const camera = new CameraController();
+  const setCount = createCounter(countEl); // escribe el count y anima "+N" al subir
+  const playback = new DetectionPlayback(video, canvas, setCount);
   /** @type {DetectionLoop|null} */
   let loop = null;
+  /** @type {string|null} objectURL del video subido (hay que revocarlo). */
+  let objectUrl = null;
 
-  const setCount = (n) => {
-    countEl.textContent = String(n);
-  };
-
-  function stopCamera() {
-    if (loop) {
-      loop.stop();
-      loop = null;
-    }
+  /** Frena cualquier modo activo (cámara, detección o playback) y resetea el stage. */
+  function reset() {
+    if (loop) { loop.stop(); loop = null; }
+    playback.stop();
     camera.stop();
+    if (objectUrl) { URL.revokeObjectURL(objectUrl); objectUrl = null; }
+    video.pause();
+    video.removeAttribute('src');
+    video.srcObject = null;
     video.classList.add('d-none');
     stopBtn.classList.add('d-none');
     clearCanvas(canvas);
@@ -45,6 +53,7 @@ export function initCameraPanel() {
   }
 
   async function startCamera() {
+    reset();
     try {
       placeholder.classList.add('d-none');
       img.classList.add('d-none');
@@ -59,21 +68,47 @@ export function initCameraPanel() {
         setCount(dets.length);
       });
     } catch (err) {
-      stopCamera();
+      reset();
       placeholder.textContent = err.message || 'No se pudo iniciar la cámara.';
       placeholder.classList.remove('d-none');
     }
   }
 
   function showDemo() {
-    stopCamera();
+    reset();
     placeholder.classList.add('d-none');
     img.classList.remove('d-none');
     drawDetections(canvas, img, DEMO_DETECTIONS);
     setCount(DEMO_DETECTIONS.length);
   }
 
+  // Sube un video a /api/detect y dibuja las detecciones que llegan por SSE.
+  async function useUploadedVideo(file) {
+    reset();
+    try {
+      placeholder.classList.add('d-none');
+      img.classList.add('d-none');
+      video.classList.remove('d-none');
+      objectUrl = URL.createObjectURL(file);
+      stopBtn.classList.remove('d-none');
+      const detectUrl = (fileInput && fileInput.dataset.detectUrl) || '/api/detect';
+      await playback.start(objectUrl, file, detectUrl);
+    } catch (err) {
+      reset();
+      placeholder.textContent = err.message || 'No se pudo procesar el video.';
+      placeholder.classList.remove('d-none');
+    }
+  }
+
   startBtn.addEventListener('click', startCamera);
   demoBtn.addEventListener('click', showDemo);
-  stopBtn.addEventListener('click', stopCamera);
+  stopBtn.addEventListener('click', reset);
+  if (uploadBtn && fileInput) {
+    uploadBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (file) useUploadedVideo(file);
+      fileInput.value = ''; // permite volver a elegir el mismo archivo
+    });
+  }
 }

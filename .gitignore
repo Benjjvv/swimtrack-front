@@ -10,3 +10,6 @@ env/
 .DS_Store
 *.log
 instance/
+
+# Instrucciones locales para Claude Code — no van al repo
+CLAUDE.md

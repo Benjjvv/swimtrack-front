@@ -1,14 +1,42 @@
 """SwimTrack — Frontend Flask.
 
-5 rutas de páginas + un endpoint proxy hacia el módulo de IA.
-Si la IA no responde, el endpoint devuelve un mock.
+5 rutas de páginas + un endpoint proxy hacia el módulo de IA + un endpoint de
+detección de nadadores (POST /api/detect) que devuelve SSE.
+Si la IA no responde, el endpoint de análisis devuelve un mock.
 """
+import json
 import os
+import tempfile
+import threading
 
 import requests
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, Response, jsonify, render_template, request
 
 from config import get_config
+
+# --- Detección de nadadores (YOLO) -----------------------------------------
+# El import del detector vive en UN SOLO lugar para que el swap sea trivial.
+# TODO: cambiar a la clase real cuando esté lista (from detector import SwimmerDetector)
+from detector_stub import SwimmerDetector
+
+# Se instancia UNA sola vez y se reutiliza entre requests: cargar los pesos es
+# caro en la clase real. Con el stub, weights=None.
+_detector = SwimmerDetector(weights=None)
+
+# Serializa el uso del detector dentro del proceso: la clase real usa YOLO con
+# track(persist=True), cuyo estado de tracking vive en la instancia. Sin esto,
+# dos requests concurrentes cruzarían los IDs y sobrecargarían la GPU. (F8)
+_detector_lock = threading.Lock()
+
+# Extensiones de video que aceptamos si el navegador no manda un mimetype video/*.
+_VIDEO_EXTS = {".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v", ".ogv", ".ogg"}
+
+
+def _looks_like_video(file):
+    """Heurística barata para rechazar archivos que claramente no son video."""
+    mimetype = (getattr(file, "mimetype", "") or "").lower()
+    ext = os.path.splitext(file.filename)[1].lower()
+    return mimetype.startswith("video/") or ext in _VIDEO_EXTS
 
 
 class PrefixMiddleware:
@@ -65,6 +93,36 @@ def _mock_analysis(payload):
     )
 
 
+def _sse_detect(video_path):
+    """Generador SSE: un evento por frame siguiendo el contrato de datos.
+
+    `count` = nº de IDs únicos acumulados hasta ese frame; lo calcula el BACK
+    (no el detector), acumulando los ids que va viendo. El video temporal se
+    borra al terminar el stream o si algo falla (finally).
+    """
+    seen_ids = set()
+    try:
+        # Un detector por proceso: serializamos su uso (tracker + GPU). (F8)
+        with _detector_lock:
+            for frame in _detector.stream(video_path):
+                for box in frame.get("boxes", []):
+                    seen_ids.add(box.get("id"))
+                frame["count"] = len(seen_ids)
+                yield f"data: {json.dumps(frame)}\n\n"
+    except Exception as exc:  # noqa: BLE001
+        # La IA real puede fallar a mitad (video corrupto, etc.). El 200 y los
+        # headers SSE ya salieron, así que no se puede devolver un 4xx/5xx: en su
+        # lugar mandamos un evento SSE de error para que el front lo muestre en
+        # vez de cortar el stream en silencio. (F2)
+        yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
+    finally:
+        # "El video se procesa y se DESCARTA": no queda nada en disco.
+        try:
+            os.remove(video_path)
+        except OSError:
+            pass
+
+
 def create_app():
     app = Flask(__name__)
     app.config.from_object(get_config())
@@ -93,6 +151,39 @@ def create_app():
     @app.route("/demo")
     def demo():
         return render_template("demo.html", active="demo")
+
+    @app.route("/api/detect", methods=["POST"])
+    def detect():
+        """Recibe un video subido, lo procesa con SwimmerDetector y responde SSE.
+
+        Un evento por frame con el contrato de datos, con `count` = IDs únicos
+        acumulados. El front hace POST con fetch() y lee el stream a mano
+        (EventSource no sirve: es solo GET). El video se guarda en un temporal
+        solo para pasarle una ruta al detector y se borra al cerrar el stream.
+        """
+        file = request.files.get("video")
+        if file is None or not file.filename:
+            return jsonify({"ok": False, "error": "Falta el archivo 'video'."}), 400
+        if not _looks_like_video(file):
+            # Rechazamos acá (antes de abrir el SSE): una vez que empieza el
+            # stream ya no se puede devolver un código de error HTTP. (F2)
+            return jsonify({"ok": False, "error": "El archivo no parece ser un video."}), 400
+
+        # La clase real de YOLO necesita una RUTA en disco: guardamos el upload
+        # en un temporal. Se elimina en _sse_detect (finally) al terminar.
+        suffix = os.path.splitext(file.filename)[1] or ".mp4"
+        fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+        os.close(fd)
+        file.save(tmp_path)
+
+        return Response(
+            _sse_detect(tmp_path),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",  # que el proxy (Apache) no buffere el stream
+            },
+        )
 
     @app.route("/api/ai/analyze", methods=["POST"])
     def ai_analyze():
@@ -129,5 +220,9 @@ app = create_app()
 
 
 if __name__ == "__main__":
+    # Solo para dev (`python app.py`). En producción se usa gunicorn -c
+    # gunicorn.conf.py app:app. threaded=True para que el stream SSE de
+    # /api/detect no bloquee las demás rutas del dev server. `flask run` ya
+    # corre con hilos por defecto.
     port = int(os.getenv("FLASK_RUN_PORT", "7001"))
-    app.run(host="0.0.0.0", port=port, debug=app.config.get("DEBUG", False))
+    app.run(host="0.0.0.0", port=port, debug=app.config.get("DEBUG", False), threaded=True)
