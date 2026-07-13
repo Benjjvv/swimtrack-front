@@ -1,143 +1,105 @@
-# Integración de la IA de detección — SwimTrack
+# Integración con el servicio remoto de visión
 
-Hola 👋 Esto es todo lo que necesitás para enchufar tu clase de detección real.
-El back y el front **ya están hechos y andando** contra un stub que imita tu
-clase. Si tu clase respeta el contrato de abajo, integrarte es **cambiar un
-import**. Nada más.
+El navegador conserva el contrato existente: sube un video con `POST /api/detect` y consume una respuesta SSE con un evento por frame. Flask funciona como BFF: guarda el upload temporalmente, decodifica el video, envía batches de JPEG al servicio privado con GPU y retransmite las detecciones al navegador. El JavaScript no conoce la URL ni el token del servicio IA.
 
----
-
-## 1. Qué reemplazás
-
-Hoy existe `detector_stub.py`: una clase `SwimmerDetector` que genera detecciones
-**falsas** (2 nadadores inventados que se mueven) respetando el contrato de datos.
-Todo el sistema —endpoint, streaming SSE, y el front que dibuja las cajas y las
-sincroniza con el video— está construido y probado contra ese stub.
-
-**Tu clase real (YOLO) sustituye al stub.** Punto.
-
----
-
-## 2. La interfaz que tu clase DEBE cumplir
-
-Mismo nombre y misma firma que el stub:
-
-```python
-class SwimmerDetector:
-    def __init__(self, weights=None):
-        # Cargás YOLO acá, UNA sola vez. `weights` = ruta al .pt.
-        ...
-
-    def stream(self, video_path):
-        # GENERADOR: un `yield` por frame procesado.
-        for ...:
-            yield {
-                "time": 3.0,        # segundos desde el inicio del video (float, no decreciente)
-                "width": 1280,      # ancho del video ORIGINAL, en px
-                "height": 720,      # alto del video ORIGINAL, en px
-                "boxes": [
-                    {"id": 1, "x1": 100, "y1": 50, "x2": 180, "y2": 250, "conf": 0.91},
-                    # ...una por nadador detectado en ese frame
-                ],
-            }
+```text
+Browser → POST /api/detect → Flask → POST batches → swimtrack-ai (GPU)
+Browser ← SSE por frame      ← Flask ← JSON por batch ← RT-DETRv2 + ByteTrack
 ```
 
-Cada caja (coords en **píxeles del video original**):
+## Ciclo de una detección
 
-- `id` — entero **estable entre frames** (de YOLO `track(persist=True)`). El mismo
-  nadador tiene el mismo `id` frame a frame. Esto es clave: el front y el conteo
-  dependen de que los ids no salten.
-- `x1, y1, x2, y2` — esquinas de la caja, en px del video original.
-- `conf` — confianza, 0..1.
+1. Flask valida y guarda el video en un archivo temporal.
+2. `RemoteSwimmerDetector` abre el video con OpenCV y crea una sesión remota con `POST /v1/tracking-sessions`.
+3. Cada frame conserva `frame_index`, timestamp y dimensiones originales, pero se redimensiona a 640×640 y se comprime como JPEG para el transporte.
+4. Los frames se agrupan según `VISION_BATCH_SIZE` y se envían secuencialmente a `POST /v1/tracking-sessions/{session_id}/batches`.
+5. RT-DETRv2 procesa internamente los frames de a uno en esta primera versión y ByteTrack actualiza la misma sesión en orden.
+6. Flask convierte `time_ms` a segundos, agrega el conteo acumulado de IDs y emite el evento SSE `{time,width,height,boxes,count}`.
+7. Al terminar, fallar o desconectarse el navegador, Flask cierra la sesión remota y elimina el archivo temporal. El TTL del servicio IA cubre una caída total de red durante el cleanup.
 
-Reglas:
+## Contrato del servicio IA
 
-- `boxes` puede ir **vacío** (`[]`) si en ese frame no hay nadadores.
-- **NO mandes `count`.** Lo calcula el back (acumula los ids únicos que va viendo).
-  Si lo incluís, se ignora.
-- Emití **solo nadadores** (ver punto 3).
+Todas las rutas privadas usan `X-Swimtrack-Auth: <VISION_AUTH_TOKEN>`.
 
-> Si tu `stream()` emite exactamente esto, la integración es el punto 4 y **nada
-> más**. No tenés que saber nada del front, del SSE ni de Flask.
+### Crear sesión
 
----
+```http
+POST /v1/tracking-sessions
+Content-Type: application/json
 
-## 3. Qué entregás vos
-
-1. **El módulo** con la clase, ej. `detector.py`, que exponga `SwimmerDetector`
-   con la interfaz de arriba.
-2. **Los pesos `.pt`** (ej. `best.pt`) y desde dónde cargarlos.
-3. **`requirements.txt`** con tus dependencias (ultralytics / torch / etc.) para
-   mergear con el nuestro. Aclará versión de torch y de CUDA si importa.
-4. **El índice de la clase "nadador"** en tu modelo (qué class id devuelve YOLO
-   para un nadador), así confirmamos que filtrás bien. Tu `stream()` ya debería
-   emitir solo esa clase.
-5. **La resolución de procesamiento**: a qué tamaño corrés la inferencia, y
-   confirmá que las cajas salen en **px del video original** (`width`/`height` del
-   frame = dims del video original). Si downscaleás para inferir, acordate de
-   mapear las coords de vuelta al original.
-
----
-
-## 4. El único punto de integración
-
-En `app.py`, líneas **19–20**, está el TODO:
-
-```python
-# TODO: cambiar a la clase real cuando esté lista (from detector import SwimmerDetector)
-from detector_stub import SwimmerDetector
+{"fps":60.0}
 ```
 
-Se cambia por:
+Respuesta `201`:
 
-```python
-from detector import SwimmerDetector
+```json
+{"session_id":"7bca...","next_sequence":0,"expires_in_seconds":900}
 ```
 
-Y si tus pesos necesitan una ruta, se ajusta la instancia (línea **24**):
+### Procesar batch
 
-```python
-_detector = SwimmerDetector(weights="best.pt")   # hoy está en weights=None
+El request es `multipart/form-data`, con un campo repetido `frames` por cada JPEG y un campo de texto `metadata`:
+
+```json
+{"batch_id":"2c53...","sequence":0,"frames":[{"frame_index":0,"time_ms":0.0,"original_width":1080,"original_height":1080}]}
 ```
 
-Eso es todo. El detector se instancia **una vez** al arrancar y se reutiliza.
+Respuesta `200`:
 
----
+```json
+{"session_id":"7bca...","batch_id":"2c53...","sequence":0,"next_sequence":1,"frames":[{"frame_index":0,"time_ms":0.0,"width":1080,"height":1080,"boxes":[{"id":1,"x1":100.0,"y1":50.0,"x2":180.0,"y2":250.0,"conf":0.91,"class_id":0}]}]}
+```
 
-## 5. Cómo probar tu clase ANTES de integrar
+`width`, `height` y las bboxes siempre corresponden a las dimensiones originales, aunque el JPEG enviado mida 640×640.
 
-En el repo hay un **`test_detector.py`** que corre la clase contra un video, sin
-levantar Flask, y valida el formato del contrato. Detecta solo tu clase real si
-existe `detector.py`; si no, prueba el stub (así ya funciona hoy). Cuando tengas
-tu módulo y tus pesos:
+### Cerrar sesión
+
+```http
+DELETE /v1/tracking-sessions/{session_id}
+```
+
+Respuesta `204`.
+
+## Orden e idempotencia
+
+Los batches de una sesión nunca se envían en paralelo porque ByteTrack depende del orden temporal. Ante un timeout o error transitorio, Flask reintenta con el mismo `batch_id`, `sequence`, metadata y bytes. El servicio IA debe devolver el resultado cacheado sin volver a avanzar el tracker. Un `batch_id` reutilizado con otro contenido o una secuencia fuera de orden produce `409` y no se reintenta.
+
+Se reintentan errores de transporte y HTTP `408`, `425`, `429`, `500`, `502`, `503` y `504`. Los demás errores se entregan al navegador como evento SSE `error`.
+
+## Configuración
+
+| Variable | Default | Uso |
+|---|---:|---|
+| `VISION_BASE_URL` | `http://localhost:8001` | URL privada del servicio GPU. |
+| `VISION_AUTH_TOKEN` | vacío | Token enviado en `X-Swimtrack-Auth`. |
+| `VISION_BATCH_SIZE` | `8` | Frames por request HTTP. |
+| `VISION_INFERENCE_SIZE` | `640` | Ancho y alto del JPEG enviado. |
+| `VISION_JPEG_QUALITY` | `85` | Calidad JPEG de OpenCV. |
+| `VISION_CONNECT_TIMEOUT` | `5` | Timeout de conexión en segundos. |
+| `VISION_READ_TIMEOUT` | `120` | Timeout esperando el resultado de un batch. |
+| `VISION_WRITE_TIMEOUT` | `30` | Timeout enviando multipart. |
+| `VISION_POOL_TIMEOUT` | `5` | Timeout esperando una conexión del pool. |
+| `VISION_CLEANUP_TIMEOUT` | `5` | Timeout por intento al cerrar una sesión; el TTL cubre fallos. |
+| `VISION_MAX_RETRIES` | `2` | Reintentos adicionales por batch y cleanup. |
+| `VISION_RETRY_BACKOFF_SECONDS` | `0.5` | Base del backoff exponencial. |
+| `VISION_FALLBACK_FPS` | `30` | FPS usado si OpenCV no puede leerlo. |
+
+`IA_BASE_URL` e `IA_SECRET_HEADER` siguen perteneciendo al coach textual de `/api/ai/analyze`; no se reutilizan para visión.
+
+El valor de `VISION_AUTH_TOKEN` en este repo debe coincidir con `SWIMTRACK_AUTH_TOKEN` en `swimtrack-ai`.
+
+En producción, conecta ambas máquinas mediante una red privada o VPN y termina TLS en un reverse proxy; el token no debe viajar por Internet usando HTTP plano. Configura también `MAX_CONTENT_LENGTH` y límites equivalentes en Apache/Nginx para rechazar videos excesivos antes de escribirlos a disco.
+
+## Desarrollo local
+
+El servicio IA debe estar disponible en `VISION_BASE_URL`; el endpoint de detección ya no cae a bboxes falsas. Para probar ambos procesos desde sus respectivos directorios:
 
 ```bash
-python test_detector.py pileta.mp4 best.pt     # ruta al video y a tus pesos .pt
+docker compose up --build
 ```
 
-Tenés que ver:
+```bash
+uv run --with-requirements requirements.txt flask --app app run --port 7001 --debug
+```
 
-- Los primeros frames impresos con la forma del contrato.
-- `id` que se **repiten** entre frames para el mismo nadador (no que cambien en
-  cada frame — si saltan, `track(persist=True)` no está bien configurado).
-- `time` creciente.
-- `OK: N frames con formato correcto`, sin ningún assert que reviente.
-
-Si eso pasa, cambiás el import (punto 4) y ya está integrado.
-
----
-
-## 6. Qué NO tenés que tocar
-
-Todo esto ya está hecho y probado contra el contrato — no lo toques:
-
-- **El front** (`static/js/…`): reproduce el video, dibuja las cajas escaladas y
-  sincronizadas por `time`, y cuenta.
-- **El endpoint** `POST /api/detect`: recibe el video, valida que sea video, lo
-  guarda en un temporal y lo borra al terminar (nada queda en disco).
-- **El streaming SSE**: arma el `count`, formatea los eventos, y maneja errores y
-  desconexiones.
-- **El contrato de datos**: no lo cambies sin avisar — lo consumen back y front.
-
-Vos ponés la clase que emite los frames; el resto ya los recibe y los dibuja.
-Cualquier duda, escribime. 🏊
+Sube un video desde la UI. Un error remoto aparecerá como evento SSE de error y el panel lo mostrará sin cambiar el status HTTP que ya inició el stream.

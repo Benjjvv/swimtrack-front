@@ -1,32 +1,27 @@
 """SwimTrack — Frontend Flask.
 
 5 rutas de páginas + un endpoint proxy hacia el módulo de IA + un endpoint de
-detección de nadadores (POST /api/detect) que devuelve SSE.
+detección de nadadores (POST /api/detect) que devuelve SSE. La visión se ejecuta
+en un servicio remoto con GPU; este proceso solo decodifica y envía frames.
 Si la IA no responde, el endpoint de análisis devuelve un mock.
 """
+
 import json
 import os
 import tempfile
-import threading
 
 import requests
-from flask import Flask, Response, jsonify, render_template, request
+from flask import (
+    Flask,
+    Response,
+    jsonify,
+    render_template,
+    request,
+    stream_with_context,
+)
 
 from config import get_config
-
-# --- Detección de nadadores (YOLO) -----------------------------------------
-# El import del detector vive en UN SOLO lugar para que el swap sea trivial.
-# TODO: cambiar a la clase real cuando esté lista (from detector import SwimmerDetector)
-from detector_stub import SwimmerDetector
-
-# Se instancia UNA sola vez y se reutiliza entre requests: cargar los pesos es
-# caro en la clase real. Con el stub, weights=None.
-_detector = SwimmerDetector(weights=None)
-
-# Serializa el uso del detector dentro del proceso: la clase real usa YOLO con
-# track(persist=True), cuyo estado de tracking vive en la instancia. Sin esto,
-# dos requests concurrentes cruzarían los IDs y sobrecargarían la GPU. (F8)
-_detector_lock = threading.Lock()
+from remote_detector import RemoteSwimmerDetector
 
 # Extensiones de video que aceptamos si el navegador no manda un mimetype video/*.
 _VIDEO_EXTS = {".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v", ".ogv", ".ogg"}
@@ -55,7 +50,7 @@ class PrefixMiddleware:
     def __call__(self, environ, start_response):
         path = environ.get("PATH_INFO", "")
         if path == self.prefix or path.startswith(self.prefix + "/"):
-            environ["PATH_INFO"] = path[len(self.prefix):] or "/"
+            environ["PATH_INFO"] = path[len(self.prefix) :] or "/"
             environ["SCRIPT_NAME"] = self.prefix
         return self.wsgi_app(environ, start_response)
 
@@ -93,7 +88,15 @@ def _mock_analysis(payload):
     )
 
 
-def _sse_detect(video_path):
+def _remove_file(path):
+    """Elimina un temporal de forma idempotente."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _sse_detect(video_path, detector):
     """Generador SSE: un evento por frame siguiendo el contrato de datos.
 
     `count` = nº de IDs únicos acumulados hasta ese frame; lo calcula el BACK
@@ -102,13 +105,13 @@ def _sse_detect(video_path):
     """
     seen_ids = set()
     try:
-        # Un detector por proceso: serializamos su uso (tracker + GPU). (F8)
-        with _detector_lock:
-            for frame in _detector.stream(video_path):
-                for box in frame.get("boxes", []):
-                    seen_ids.add(box.get("id"))
-                frame["count"] = len(seen_ids)
-                yield f"data: {json.dumps(frame)}\n\n"
+        # Cada stream remoto crea su propia sesión ByteTrack, por lo que dos
+        # uploads concurrentes no comparten IDs ni requieren un lock global.
+        for frame in detector.stream(video_path):
+            for box in frame.get("boxes", []):
+                seen_ids.add(box.get("id"))
+            frame["count"] = len(seen_ids)
+            yield f"data: {json.dumps(frame)}\n\n"
     except Exception as exc:  # noqa: BLE001
         # La IA real puede fallar a mitad (video corrupto, etc.). El 200 y los
         # headers SSE ya salieron, así que no se puede devolver un 4xx/5xx: en su
@@ -117,15 +120,22 @@ def _sse_detect(video_path):
         yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
     finally:
         # "El video se procesa y se DESCARTA": no queda nada en disco.
-        try:
-            os.remove(video_path)
-        except OSError:
-            pass
+        _remove_file(video_path)
 
 
-def create_app():
+def create_app(config_overrides=None, detector=None):
     app = Flask(__name__)
     app.config.from_object(get_config())
+    if config_overrides:
+        app.config.update(config_overrides)
+
+    # El adaptador no abre red ni decodifica video al construirse. Se conserva
+    # en extensions para reutilizar configuración y permitir reemplazarlo en tests.
+    app.extensions["swimmer_detector"] = (
+        detector
+        if detector is not None
+        else RemoteSwimmerDetector.from_flask_config(app.config)
+    )
 
     # En producción (URL_PREFIX != "/") montamos la app bajo el subpath de Apache.
     prefix = app.config.get("URL_PREFIX", "/")
@@ -154,7 +164,7 @@ def create_app():
 
     @app.route("/api/detect", methods=["POST"])
     def detect():
-        """Recibe un video subido, lo procesa con SwimmerDetector y responde SSE.
+        """Recibe un video, lo procesa en el servicio GPU y responde SSE.
 
         Un evento por frame con el contrato de datos, con `count` = IDs únicos
         acumulados. El front hace POST con fetch() y lee el stream a mano
@@ -167,23 +177,36 @@ def create_app():
         if not _looks_like_video(file):
             # Rechazamos acá (antes de abrir el SSE): una vez que empieza el
             # stream ya no se puede devolver un código de error HTTP. (F2)
-            return jsonify({"ok": False, "error": "El archivo no parece ser un video."}), 400
+            return jsonify(
+                {"ok": False, "error": "El archivo no parece ser un video."}
+            ), 400
 
-        # La clase real de YOLO necesita una RUTA en disco: guardamos el upload
-        # en un temporal. Se elimina en _sse_detect (finally) al terminar.
-        suffix = os.path.splitext(file.filename)[1] or ".mp4"
+        # OpenCV necesita una ruta en disco: guardamos el upload en un temporal.
+        # Se elimina al terminar, al fallar o cuando el cliente corta el stream.
+        uploaded_ext = os.path.splitext(file.filename)[1].lower()
+        suffix = uploaded_ext if uploaded_ext in _VIDEO_EXTS else ".mp4"
         fd, tmp_path = tempfile.mkstemp(suffix=suffix)
         os.close(fd)
-        file.save(tmp_path)
+        try:
+            file.save(tmp_path)
+        except Exception:
+            _remove_file(tmp_path)
+            raise
 
-        return Response(
-            _sse_detect(tmp_path),
+        response = Response(
+            stream_with_context(
+                _sse_detect(tmp_path, app.extensions["swimmer_detector"])
+            ),
             mimetype="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
                 "X-Accel-Buffering": "no",  # que el proxy (Apache) no buffere el stream
             },
         )
+        # Respaldo para el caso extremo en que WSGI cierre la respuesta sin
+        # empezar a iterar el generador (cuyo finally aún no habría corrido).
+        response.call_on_close(lambda: _remove_file(tmp_path))
+        return response
 
     @app.route("/api/ai/analyze", methods=["POST"])
     def ai_analyze():
@@ -200,18 +223,22 @@ def create_app():
             )
             resp.raise_for_status()
             data = resp.json()
-            return jsonify({
-                "ok": True,
-                "mock": False,
-                "analysis": data.get("analysis", data.get("text", "")),
-            })
+            return jsonify(
+                {
+                    "ok": True,
+                    "mock": False,
+                    "analysis": data.get("analysis", data.get("text", "")),
+                }
+            )
         except (requests.RequestException, ValueError):
             # IA caída, timeout o respuesta no-JSON: mock para no bloquear el front.
-            return jsonify({
-                "ok": True,
-                "mock": True,
-                "analysis": _mock_analysis(payload),
-            })
+            return jsonify(
+                {
+                    "ok": True,
+                    "mock": True,
+                    "analysis": _mock_analysis(payload),
+                }
+            )
 
     return app
 
@@ -225,4 +252,6 @@ if __name__ == "__main__":
     # /api/detect no bloquee las demás rutas del dev server. `flask run` ya
     # corre con hilos por defecto.
     port = int(os.getenv("FLASK_RUN_PORT", "7001"))
-    app.run(host="0.0.0.0", port=port, debug=app.config.get("DEBUG", False), threaded=True)
+    app.run(
+        host="0.0.0.0", port=port, debug=app.config.get("DEBUG", False), threaded=True
+    )

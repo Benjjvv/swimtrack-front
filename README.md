@@ -2,7 +2,7 @@
 
 Frontend Flask de **SwimTrack**, un sistema de visión por computadora para entrenamiento de natación: una cámara fija detecta nadadores y el entrenador cuenta largos y mide tiempos sin tener que hacerlo a mano.
 
-Este repo es **solo el frontend**. El módulo de IA real (análisis textual / coach) vive en otro repo; acá dejamos un punto de integración limpio (`/api/ai/analyze`) que cae a un mock si la IA no está disponible.
+Este repo contiene el frontend y su BFF Flask. El análisis textual se integra mediante `/api/ai/analyze`; la detección RT-DETRv2 + ByteTrack se ejecuta en `swimtrack-ai` y se integra mediante `/api/detect` sin exponer la máquina GPU al navegador.
 
 Ver [PLAN.md](PLAN.md) para la especificación completa por tareas.
 
@@ -27,15 +27,8 @@ Ver [PLAN.md](PLAN.md) para la especificación completa por tareas.
 ## Cómo correrlo en local
 
 ```bash
-# Una sola vez
-python3 -m venv venv
-source venv/bin/activate            # En Windows: venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env                # Editar .env si hace falta
-
-# Cada vez
-source venv/bin/activate
-flask --app app run --port 7001 --debug
+cp .env.example .env
+uv run --with-requirements requirements.txt flask --app app run --port 7001 --debug
 ```
 
 Abrir <http://localhost:7001>.
@@ -51,11 +44,33 @@ Abrir <http://localhost:7001>.
 | `URL_PREFIX` | `/` en local, `/swimtrack/` bajo el server con Apache. |
 | `IA_BASE_URL` | URL del Flask de IA (ej. `http://localhost:7011`). |
 | `IA_SECRET_HEADER` | Secreto compartido; se manda como header `X-Swimtrack-Auth`. |
+| `VISION_BASE_URL` | URL privada de `swimtrack-ai` (ej. `http://gpu-host:8001`). |
+| `VISION_AUTH_TOKEN` | Token compartido con `swimtrack-ai`. |
+| `VISION_BATCH_SIZE` | Cantidad de frames JPEG enviados por request; default `8`. |
+| `VISION_INFERENCE_SIZE` | Resolución cuadrada enviada al modelo; default `640`. |
+| `VISION_JPEG_QUALITY` | Calidad de compresión de los frames; default `85`. |
+| `VISION_*_TIMEOUT` | Timeouts de conexión, lectura, escritura y pool. |
+| `VISION_CLEANUP_TIMEOUT` | Timeout corto para cerrar una sesión remota. |
+| `VISION_MAX_RETRIES` | Reintentos idempotentes adicionales por batch. |
+| `MAX_CONTENT_LENGTH` | Tamaño máximo del upload de video completo; default 1 GiB. |
 | `FLASK_SECRET_KEY` | Clave de sesión de Flask. |
 
 `.env` no se sube al repo; `.env.example` sí.
 
+`VISION_AUTH_TOKEN` debe tener exactamente el mismo valor que `SWIMTRACK_AUTH_TOKEN` en `swimtrack-ai`.
+
+## Tests
+
+```bash
+uv run --with-requirements requirements.txt --with pytest pytest -q
+uv run --with ruff ruff check .
+```
+
 ## API
+
+### `POST /api/detect`
+
+Recibe `multipart/form-data` con el campo `video`, crea una sesión de tracking remota y responde `text/event-stream`. Cada evento contiene `{time,width,height,boxes,count}`. El archivo temporal y la sesión remota se limpian al terminar, fallar o cortar el stream. Consulta [INTEGRACION_IA.md](INTEGRACION_IA.md) para el contrato completo.
 
 ### `POST /api/ai/analyze`
 
@@ -66,8 +81,9 @@ Respuesta: `{ "ok": true, "mock": <bool>, "analysis": "<texto>" }`.
 ## Estructura
 
 ```
-app.py                 Flask + 5 rutas + proxy /api/ai/analyze
+app.py                 Flask + páginas + endpoints /api/detect y /api/ai/analyze
 config.py              Config dev/prod desde .env
+remote_detector.py     Decode, batching HTTP, retries y cleanup de sesiones IA
 templates/             base.html + 1 plantilla por página
 static/css/theme.css   Tema oscuro sobre Bootstrap
 static/js/

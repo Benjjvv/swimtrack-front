@@ -2,6 +2,7 @@
 
 Carga las variables desde .env y expone clases por entorno.
 """
+
 import os
 from dotenv import load_dotenv
 
@@ -15,6 +16,24 @@ class Config:
     URL_PREFIX = os.getenv("URL_PREFIX", "/")
     IA_BASE_URL = os.getenv("IA_BASE_URL", "http://localhost:7011")
     IA_SECRET_HEADER = os.getenv("IA_SECRET_HEADER", "")
+    MAX_CONTENT_LENGTH = int(os.getenv("MAX_CONTENT_LENGTH", str(1024**3)))
+
+    # Servicio independiente de visión (RT-DETRv2 + ByteTrack) en la GPU.
+    VISION_BASE_URL = os.getenv("VISION_BASE_URL", "http://localhost:8001")
+    VISION_AUTH_TOKEN = os.getenv("VISION_AUTH_TOKEN", "")
+    VISION_BATCH_SIZE = int(os.getenv("VISION_BATCH_SIZE", "8"))
+    VISION_INFERENCE_SIZE = int(os.getenv("VISION_INFERENCE_SIZE", "640"))
+    VISION_JPEG_QUALITY = int(os.getenv("VISION_JPEG_QUALITY", "85"))
+    VISION_CONNECT_TIMEOUT = float(os.getenv("VISION_CONNECT_TIMEOUT", "5"))
+    VISION_READ_TIMEOUT = float(os.getenv("VISION_READ_TIMEOUT", "120"))
+    VISION_WRITE_TIMEOUT = float(os.getenv("VISION_WRITE_TIMEOUT", "30"))
+    VISION_POOL_TIMEOUT = float(os.getenv("VISION_POOL_TIMEOUT", "5"))
+    VISION_CLEANUP_TIMEOUT = float(os.getenv("VISION_CLEANUP_TIMEOUT", "5"))
+    VISION_MAX_RETRIES = int(os.getenv("VISION_MAX_RETRIES", "2"))
+    VISION_RETRY_BACKOFF_SECONDS = float(
+        os.getenv("VISION_RETRY_BACKOFF_SECONDS", "0.5")
+    )
+    VISION_FALLBACK_FPS = float(os.getenv("VISION_FALLBACK_FPS", "30"))
 
 
 class DevelopmentConfig(Config):

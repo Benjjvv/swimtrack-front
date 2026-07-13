@@ -1,0 +1,184 @@
+import json
+import uuid
+
+import httpx
+import numpy as np
+
+import remote_detector
+from remote_detector import RemoteSwimmerDetector
+
+
+class FakeCapture:
+    def __init__(self, frames, fps=2.0):
+        self.frames = list(frames)
+        self.fps = fps
+        self.released = False
+
+    def isOpened(self):
+        return True
+
+    def get(self, prop):
+        if prop == remote_detector.cv2.CAP_PROP_FPS:
+            return self.fps
+        return 0
+
+    def read(self):
+        if not self.frames:
+            return False, None
+        return True, self.frames.pop(0)
+
+    def release(self):
+        self.released = True
+
+
+class FakeVisionClient:
+    def __init__(self, *, transient_first_batch=False, **kwargs):
+        self.kwargs = kwargs
+        self.transient_first_batch = transient_first_batch
+        self.batch_calls = []
+        self.deleted = []
+        self.closed = False
+
+    def post(self, url, *, json=None, data=None, files=None):
+        if url.endswith("/v1/tracking-sessions"):
+            assert json == {"fps": 2.0}
+            return httpx.Response(
+                201,
+                json={"session_id": "session-1", "next_sequence": 0},
+            )
+
+        metadata = data["metadata"]
+        self.batch_calls.append(
+            {
+                "metadata": metadata,
+                "files": [(name, file_tuple) for name, file_tuple in files],
+            }
+        )
+        if self.transient_first_batch and len(self.batch_calls) == 1:
+            return httpx.Response(503, json={"detail": "warming up"})
+
+        request = __import__("json").loads(metadata)
+        response_frames = []
+        for frame in request["frames"]:
+            response_frames.append(
+                {
+                    "frame_index": frame["frame_index"],
+                    "time_ms": frame["time_ms"],
+                    "width": frame["original_width"],
+                    "height": frame["original_height"],
+                    "boxes": [
+                        {
+                            "id": 7,
+                            "x1": 1,
+                            "y1": 2,
+                            "x2": 10,
+                            "y2": 12,
+                            "conf": 0.9,
+                            "class_id": 0,
+                        }
+                    ],
+                }
+            )
+        return httpx.Response(
+            200,
+            json={
+                "session_id": "session-1",
+                "batch_id": request["batch_id"],
+                "sequence": request["sequence"],
+                "next_sequence": request["sequence"] + 1,
+                "frames": response_frames,
+            },
+        )
+
+    def delete(self, url, *, timeout=None):
+        self.deleted.append(url)
+        assert timeout == 5.0
+        return httpx.Response(204)
+
+    def close(self):
+        self.closed = True
+
+
+def _build_detector(monkeypatch, *, transient_first_batch=False):
+    frames = [np.zeros((20, 40, 3), dtype=np.uint8) for _ in range(3)]
+    capture = FakeCapture(frames)
+    monkeypatch.setattr(remote_detector.cv2, "VideoCapture", lambda _path: capture)
+    client = FakeVisionClient(transient_first_batch=transient_first_batch)
+    batch_ids = iter((uuid.UUID(int=1), uuid.UUID(int=2), uuid.UUID(int=3)))
+    detector = RemoteSwimmerDetector(
+        base_url="http://vision.test/",
+        auth_token="secret",
+        batch_size=2,
+        max_retries=2,
+        retry_backoff_seconds=0,
+        client_factory=lambda **_kwargs: client,
+        uuid_factory=lambda: next(batch_ids),
+    )
+    return detector, capture, client
+
+
+def test_stream_sends_sequential_batches_and_normalizes_results(monkeypatch):
+    detector, capture, client = _build_detector(monkeypatch)
+
+    results = list(detector.stream("video.mp4"))
+
+    assert [frame["time"] for frame in results] == [0.0, 0.5, 1.0]
+    assert [(frame["width"], frame["height"]) for frame in results] == [
+        (40, 20),
+        (40, 20),
+        (40, 20),
+    ]
+    assert results[0]["boxes"] == [
+        {
+            "id": 7,
+            "x1": 1.0,
+            "y1": 2.0,
+            "x2": 10.0,
+            "y2": 12.0,
+            "conf": 0.9,
+        }
+    ]
+    assert len(client.batch_calls) == 2
+    first = json.loads(client.batch_calls[0]["metadata"])
+    second = json.loads(client.batch_calls[1]["metadata"])
+    assert first["sequence"] == 0
+    assert second["sequence"] == 1
+    assert [item["frame_index"] for item in first["frames"]] == [0, 1]
+    assert first["frames"][0]["original_width"] == 40
+    assert first["frames"][0]["original_height"] == 20
+    assert all(field == "frames" for field, _file in client.batch_calls[0]["files"])
+    first_jpeg = client.batch_calls[0]["files"][0][1][1]
+    decoded = remote_detector.cv2.imdecode(
+        np.frombuffer(first_jpeg, dtype=np.uint8), remote_detector.cv2.IMREAD_COLOR
+    )
+    assert decoded.shape == (640, 640, 3)
+    assert capture.released
+    assert client.closed
+    assert client.deleted == ["http://vision.test/v1/tracking-sessions/session-1"]
+
+
+def test_batch_retry_reuses_identical_id_metadata_and_bytes(monkeypatch):
+    detector, _capture, client = _build_detector(
+        monkeypatch, transient_first_batch=True
+    )
+
+    list(detector.stream("video.mp4"))
+
+    first_attempt, retry = client.batch_calls[:2]
+    assert retry["metadata"] == first_attempt["metadata"]
+    assert json.loads(retry["metadata"])["batch_id"] == str(uuid.UUID(int=1))
+    assert [item[1][1] for item in retry["files"]] == [
+        item[1][1] for item in first_attempt["files"]
+    ]
+
+
+def test_closing_stream_releases_video_client_and_remote_session(monkeypatch):
+    detector, capture, client = _build_detector(monkeypatch)
+
+    stream = detector.stream("video.mp4")
+    next(stream)
+    stream.close()
+
+    assert capture.released
+    assert client.closed
+    assert client.deleted == ["http://vision.test/v1/tracking-sessions/session-1"]

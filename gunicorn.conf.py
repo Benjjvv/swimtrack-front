@@ -21,6 +21,7 @@ agregar otra capa de prefijo — la app ya es dueña del prefijo y hacerlo dos v
 rompería url_for(). El middleware devuelve el iterable del stream tal cual (no
 bufferiza), por lo que el SSE atraviesa el subpath sin cambios.
 """
+
 import os
 
 # --- Dónde escucha ---------------------------------------------------------
@@ -35,23 +36,19 @@ bind = os.getenv("GUNICORN_BIND", "127.0.0.1:" + os.getenv("FLASK_RUN_PORT", "70
 # dejamos explícito.)
 worker_class = "gthread"
 
-# Pocos PROCESOS. Cada worker importa app.py por separado y crea su propio
-# `_detector`; con la clase real eso carga los pesos de YOLO en GPU/RAM UNA vez
-# por proceso, y una sola GPU no quiere N inferencias en paralelo. 2 workers dan
-# tolerancia a fallos (si uno muere a mitad de un stream, el otro sigue) sin
-# duplicar de más el modelo. Con una GPU chica podés bajar a 1 y subir threads.
+# Pocos PROCESOS. El modelo vive en swimtrack-ai, no en estos workers; cada
+# upload crea una sesión remota aislada. Dos workers dan tolerancia a fallos y
+# capacidad de decodificación sin multiplicar memoria CUDA en esta aplicación.
 workers = int(os.getenv("GUNICORN_WORKERS", "2"))
 
 # HILOS por worker: acá está la concurrencia real. Un hilo puede quedar atado a
-# un stream largo mientras el resto atiende requests cortas. YOLO (torch) libera
-# el GIL durante la inferencia en C/CUDA, así que los hilos avanzan de verdad
-# aun con la clase real. 2 workers x 4 hilos = hasta 8 requests simultáneas.
+# un stream largo mientras el resto atiende requests cortas. OpenCV y el cliente
+# HTTP liberan el GIL durante decode/encode e I/O. 2 workers x 4 hilos permiten
+# hasta 8 requests simultáneas; swimtrack-ai serializa el acceso a una sesión.
 threads = int(os.getenv("GUNICORN_THREADS", "4"))
 
-# NO precargar la app. Con preload_app=True gunicorn importaría app.py (creando
-# `_detector`, o sea el modelo) en el master y forkearía los workers; el contexto
-# CUDA no sobrevive al fork ("Cannot re-initialize CUDA in forked subprocess").
-# Con preload_app=False cada worker inicializa CUDA después del fork. Correcto.
+# No precargar mantiene el comportamiento histórico y aísla la configuración y
+# pools HTTP de cada worker. El front ya no crea contextos CUDA locales.
 preload_app = False
 
 # --- Timeouts pensados para streaming --------------------------------------
