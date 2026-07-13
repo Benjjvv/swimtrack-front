@@ -44,7 +44,7 @@ Abrir <http://localhost:7001>.
 | `URL_PREFIX` | `/` en local, `/swimtrack/` bajo el server con Apache. |
 | `IA_BASE_URL` | URL del Flask de IA (ej. `http://localhost:7011`). |
 | `IA_SECRET_HEADER` | Secreto compartido; se manda como header `X-Swimtrack-Auth`. |
-| `VISION_BASE_URL` | URL privada de `swimtrack-ai` (ej. `http://gpu-host:8001`). |
+| `VISION_BASE_URL` | URL de `swimtrack-ai`; con el SSH tunnel recomendado usa `http://127.0.0.1:18001`. |
 | `VISION_AUTH_TOKEN` | Token compartido con `swimtrack-ai`. |
 | `VISION_BATCH_SIZE` | Cantidad de frames JPEG enviados por request; default `8`. |
 | `VISION_INFERENCE_SIZE` | Resolución cuadrada enviada al modelo; default `640`. |
@@ -58,6 +58,8 @@ Abrir <http://localhost:7001>.
 `.env` no se sube al repo; `.env.example` sí.
 
 `VISION_AUTH_TOKEN` debe tener exactamente el mismo valor que `SWIMTRACK_AUTH_TOKEN` en `swimtrack-ai`.
+
+Cuando la máquina GPU no dispone de Docker ni sudo, `swimtrack-ai` se ejecuta nativamente con `uv` y permanece enlazado a `127.0.0.1:8001`. El front accede por un SSH tunnel local en `127.0.0.1:18001`; consulta [INTEGRACION_IA.md](INTEGRACION_IA.md#conexión-recomendada-sin-docker-ni-sudo) para la configuración y el smoke test.
 
 ## Tests
 

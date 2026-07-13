@@ -70,7 +70,7 @@ Se reintentan errores de transporte y HTTP `408`, `425`, `429`, `500`, `502`, `5
 
 | Variable | Default | Uso |
 |---|---:|---|
-| `VISION_BASE_URL` | `http://localhost:8001` | URL privada del servicio GPU. |
+| `VISION_BASE_URL` | `http://localhost:8001` | URL privada del servicio GPU; usa `http://127.0.0.1:18001` con el SSH tunnel recomendado. |
 | `VISION_AUTH_TOKEN` | vacío | Token enviado en `X-Swimtrack-Auth`. |
 | `VISION_BATCH_SIZE` | `8` | Frames por request HTTP. |
 | `VISION_INFERENCE_SIZE` | `640` | Ancho y alto del JPEG enviado. |
@@ -88,18 +88,56 @@ Se reintentan errores de transporte y HTTP `408`, `425`, `429`, `500`, `502`, `5
 
 El valor de `VISION_AUTH_TOKEN` en este repo debe coincidir con `SWIMTRACK_AUTH_TOKEN` en `swimtrack-ai`.
 
-En producción, conecta ambas máquinas mediante una red privada o VPN y termina TLS en un reverse proxy; el token no debe viajar por Internet usando HTTP plano. Configura también `MAX_CONTENT_LENGTH` y límites equivalentes en Apache/Nginx para rechazar videos excesivos antes de escribirlos a disco.
+En producción, conecta ambas máquinas mediante el SSH tunnel descrito abajo, una red privada o una VPN. Si expones el servicio por TCP, termina TLS en un reverse proxy; el token no debe viajar por Internet usando HTTP plano. Configura también `MAX_CONTENT_LENGTH` y límites equivalentes en Apache/Nginx para rechazar videos excesivos antes de escribirlos a disco.
 
-## Desarrollo local
+## Conexión recomendada sin Docker ni sudo
 
-El servicio IA debe estar disponible en `VISION_BASE_URL`; el endpoint de detección ya no cae a bboxes falsas. Para probar ambos procesos desde sus respectivos directorios:
+Ejecuta `swimtrack-ai` como proceso nativo con `uv` en la máquina GPU y haz que Uvicorn escuche solamente en loopback (`127.0.0.1:8001`). Desde la máquina del front, abre un SSH tunnel que publique ese servicio en el puerto local `18001`:
 
 ```bash
-docker compose up --build
+ssh -NT \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 \
+  -L 127.0.0.1:18001:127.0.0.1:8001 \
+  <usuario>@<gpu-host>
 ```
+
+Mientras esa sesión SSH permanezca activa, el recorrido es:
+
+```text
+Flask → http://127.0.0.1:18001 → SSH cifrado → GPU http://127.0.0.1:8001
+```
+
+Configura el front con la URL local y exactamente el mismo token usado como `SWIMTRACK_AUTH_TOKEN` en la máquina GPU:
+
+```dotenv
+VISION_BASE_URL=http://127.0.0.1:18001
+VISION_AUTH_TOKEN=<mismo-token-de-swimtrack-ai>
+```
+
+Este esquema no requiere Docker, sudo, abrir el puerto 8001 en el firewall ni enviar el token por HTTP sin cifrar. Si el front y `swimtrack-ai` se ejecutan excepcionalmente en la misma máquina, puedes usar `VISION_BASE_URL=http://127.0.0.1:8001` y omitir el tunnel.
+
+## Smoke test end-to-end
+
+Con `swimtrack-ai` ejecutándose en la máquina GPU y el SSH tunnel activo, valida primero que el servicio remoto responda a través del puerto local:
+
+```bash
+curl --fail --show-error http://127.0.0.1:18001/healthz
+curl --fail --show-error http://127.0.0.1:18001/readyz
+```
+
+Inicia el front desde `swimtrack-front/`:
 
 ```bash
 uv run --with-requirements requirements.txt flask --app app run --port 7001 --debug
 ```
 
-Sube un video desde la UI. Un error remoto aparecerá como evento SSE de error y el panel lo mostrará sin cambiar el status HTTP que ya inició el stream.
+En otra terminal envía un video corto al BFF y conserva abierta la respuesta SSE:
+
+```bash
+curl --no-buffer --fail-with-body \
+  -F "video=@../input_vids/<video>.mp4;type=video/mp4" \
+  http://127.0.0.1:7001/api/detect
+```
+
+La prueba es exitosa si `/readyz` indica que el backend está listo, `/api/detect` emite un evento por frame sin `event: error`, las bboxes respetan las dimensiones originales y los IDs se mantienen entre frames consecutivos. También puedes subir el mismo video desde la UI. Un error remoto aparecerá como evento SSE y el panel lo mostrará aunque el status HTTP del stream ya haya comenzado.
