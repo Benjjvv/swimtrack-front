@@ -44,8 +44,9 @@ Abrir <http://localhost:7001>.
 | `URL_PREFIX` | `/` en local, `/swimtrack/` bajo el server con Apache. |
 | `IA_BASE_URL` | URL del Flask de IA (ej. `http://localhost:7011`). |
 | `IA_SECRET_HEADER` | Secreto compartido; se manda como header `X-Swimtrack-Auth`. |
-| `VISION_BASE_URL` | URL de `swimtrack-ai`; con el SSH tunnel recomendado usa `http://127.0.0.1:18001`. |
+| `VISION_BASE_URL` | URL privada de `swimtrack-ai`; en este despliegue usa `http://10.0.218.101:7001`. |
 | `VISION_AUTH_TOKEN` | Token compartido con `swimtrack-ai`. |
+| `VISION_LAP_CALIBRATION_ID` | Calibración fija solicitada al crear la sesión; default `fixed-camera-v1`. |
 | `VISION_BATCH_SIZE` | Cantidad de frames JPEG enviados por request; default `8`. |
 | `VISION_INFERENCE_SIZE` | Resolución cuadrada enviada al modelo; default `640`. |
 | `VISION_JPEG_QUALITY` | Calidad de compresión de los frames; default `85`. |
@@ -59,12 +60,12 @@ Abrir <http://localhost:7001>.
 
 `VISION_AUTH_TOKEN` debe tener exactamente el mismo valor que `SWIMTRACK_AUTH_TOKEN` en `swimtrack-ai`.
 
-Cuando la máquina GPU no dispone de Docker ni sudo, `swimtrack-ai` se ejecuta nativamente con `uv` y permanece enlazado a `127.0.0.1:8001`. El front accede por un SSH tunnel local en `127.0.0.1:18001`; consulta [INTEGRACION_IA.md](INTEGRACION_IA.md#conexión-recomendada-sin-docker-ni-sudo) para la configuración y el smoke test.
+En la VM temporal del proyecto, `swimtrack-ai` se ejecuta nativamente con `uv` en `10.0.218.101:7001`, dentro del rango ya abierto. El token protege las rutas privadas, pero UFW no restringe el acceso por origen; no reutilices esta configuración fuera de esta red privada temporal. Consulta [INTEGRACION_IA.md](INTEGRACION_IA.md#conexión-directa-privada) para la configuración y el smoke test.
 
 ## Tests
 
 ```bash
-uv run --with-requirements requirements.txt --with pytest pytest -q
+uv run --with-requirements requirements.txt --with pytest python -m pytest -q
 uv run --with ruff ruff check .
 ```
 
@@ -72,7 +73,7 @@ uv run --with ruff ruff check .
 
 ### `POST /api/detect`
 
-Recibe `multipart/form-data` con el campo `video`, crea una sesión de tracking remota y responde `text/event-stream`. Cada evento contiene `{time,width,height,boxes,count}`. El archivo temporal y la sesión remota se limpian al terminar, fallar o cortar el stream. Consulta [INTEGRACION_IA.md](INTEGRACION_IA.md) para el contrato completo.
+Recibe `multipart/form-data` con el campo `video`, crea una sesión de tracking remota y responde `text/event-stream`. Cada evento contiene `{time,width,height,boxes,count,lap_scores?}`. `lap_scores` conserva el score heurístico y la evidencia por carril cuando la calibración está habilitada; `count` mantiene su semántica histórica de IDs acumulados. El archivo temporal y la sesión remota se limpian al terminar, fallar o cortar el stream. Consulta [INTEGRACION_IA.md](INTEGRACION_IA.md) para el contrato completo.
 
 ### `POST /api/ai/analyze`
 
@@ -104,8 +105,8 @@ Regla del proyecto: ningún `.js` supera ~300 líneas; las URLs en HTML usan sie
 En el server, detrás de Apache con `URL_PREFIX=/swimtrack/`:
 
 ```apache
-ProxyPass        /swimtrack/  http://localhost:7001/
-ProxyPassReverse /swimtrack/  http://localhost:7001/
+ProxyPass        /swimtrack/  http://127.0.0.1:7101/swimtrack/
+ProxyPassReverse /swimtrack/  http://127.0.0.1:7101/swimtrack/
 ```
 
 Detalle completo en [PLAN.md](PLAN.md), sección 14.

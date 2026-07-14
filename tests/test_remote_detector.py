@@ -32,16 +32,18 @@ class FakeCapture:
 
 
 class FakeVisionClient:
-    def __init__(self, *, transient_first_batch=False, **kwargs):
+    def __init__(self, *, transient_first_batch=False, include_lap_scores=False, **kwargs):
         self.kwargs = kwargs
         self.transient_first_batch = transient_first_batch
+        self.include_lap_scores = include_lap_scores
+        self.session_payloads = []
         self.batch_calls = []
         self.deleted = []
         self.closed = False
 
     def post(self, url, *, json=None, data=None, files=None):
         if url.endswith("/v1/tracking-sessions"):
-            assert json == {"fps": 2.0}
+            self.session_payloads.append(json)
             return httpx.Response(
                 201,
                 json={"session_id": "session-1", "next_sequence": 0},
@@ -60,25 +62,48 @@ class FakeVisionClient:
         request = __import__("json").loads(metadata)
         response_frames = []
         for frame in request["frames"]:
-            response_frames.append(
-                {
-                    "frame_index": frame["frame_index"],
-                    "time_ms": frame["time_ms"],
-                    "width": frame["original_width"],
-                    "height": frame["original_height"],
-                    "boxes": [
-                        {
-                            "id": 7,
-                            "x1": 1,
-                            "y1": 2,
-                            "x2": 10,
-                            "y2": 12,
-                            "conf": 0.9,
-                            "class_id": 0,
-                        }
-                    ],
-                }
-            )
+            response_frame = {
+                "frame_index": frame["frame_index"],
+                "time_ms": frame["time_ms"],
+                "width": frame["original_width"],
+                "height": frame["original_height"],
+                "boxes": [
+                    {
+                        "id": 7,
+                        "x1": 1,
+                        "y1": 2,
+                        "x2": 10,
+                        "y2": 12,
+                        "conf": 0.9,
+                        "class_id": 0,
+                    }
+                ],
+            }
+            if self.include_lap_scores:
+                response_frame["lap_scores"] = [
+                    {
+                        "lane_id": "center",
+                        "track_id": 7,
+                        "lap_score": 0.82,
+                        "no_lap_score": 0.18,
+                        "observation_quality": 0.93,
+                        "evaluable": True,
+                        "longitudinal_position": 0.91,
+                        "endpoint": "near",
+                        "candidate_time_ms": frame["time_ms"],
+                        "window_start_ms": 0.0,
+                        "window_end_ms": frame["time_ms"],
+                        "score_version": "trajectory-v1",
+                        "evidence": {
+                            "wall": 0.96,
+                            "approach": 0.84,
+                            "reversal": 0.88,
+                            "departure": 0.79,
+                            "track_quality": 0.93,
+                        },
+                    }
+                ]
+            response_frames.append(response_frame)
         return httpx.Response(
             200,
             json={
@@ -99,15 +124,25 @@ class FakeVisionClient:
         self.closed = True
 
 
-def _build_detector(monkeypatch, *, transient_first_batch=False):
+def _build_detector(
+    monkeypatch,
+    *,
+    transient_first_batch=False,
+    lap_calibration_id=None,
+    include_lap_scores=False,
+):
     frames = [np.zeros((20, 40, 3), dtype=np.uint8) for _ in range(3)]
     capture = FakeCapture(frames)
     monkeypatch.setattr(remote_detector.cv2, "VideoCapture", lambda _path: capture)
-    client = FakeVisionClient(transient_first_batch=transient_first_batch)
+    client = FakeVisionClient(
+        transient_first_batch=transient_first_batch,
+        include_lap_scores=include_lap_scores,
+    )
     batch_ids = iter((uuid.UUID(int=1), uuid.UUID(int=2), uuid.UUID(int=3)))
     detector = RemoteSwimmerDetector(
         base_url="http://vision.test/",
         auth_token="secret",
+        lap_calibration_id=lap_calibration_id,
         batch_size=2,
         max_retries=2,
         retry_backoff_seconds=0,
@@ -138,6 +173,7 @@ def test_stream_sends_sequential_batches_and_normalizes_results(monkeypatch):
             "conf": 0.9,
         }
     ]
+    assert client.session_payloads == [{"fps": 2.0}]
     assert len(client.batch_calls) == 2
     first = json.loads(client.batch_calls[0]["metadata"])
     second = json.loads(client.batch_calls[1]["metadata"])
@@ -155,6 +191,24 @@ def test_stream_sends_sequential_batches_and_normalizes_results(monkeypatch):
     assert capture.released
     assert client.closed
     assert client.deleted == ["http://vision.test/v1/tracking-sessions/session-1"]
+
+
+def test_stream_enables_and_forwards_fixed_camera_lap_scores(monkeypatch):
+    detector, _capture, client = _build_detector(
+        monkeypatch,
+        lap_calibration_id="fixed-camera-v1",
+        include_lap_scores=True,
+    )
+
+    results = list(detector.stream("video.mp4"))
+
+    assert client.session_payloads == [
+        {"fps": 2.0, "lap_calibration_id": "fixed-camera-v1"}
+    ]
+    score = results[0]["lap_scores"][0]
+    assert score["lane_id"] == "center"
+    assert score["lap_score"] == 0.82
+    assert score["evidence"]["reversal"] == 0.88
 
 
 def test_batch_retry_reuses_identical_id_metadata_and_bytes(monkeypatch):

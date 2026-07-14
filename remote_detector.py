@@ -58,6 +58,7 @@ class RemoteSwimmerDetector:
         *,
         base_url: str,
         auth_token: str,
+        lap_calibration_id: str | None = None,
         batch_size: int = 8,
         inference_size: int = 640,
         jpeg_quality: int = 85,
@@ -90,6 +91,7 @@ class RemoteSwimmerDetector:
 
         self.base_url = base_url.rstrip("/")
         self.auth_token = auth_token
+        self.lap_calibration_id = lap_calibration_id.strip() if lap_calibration_id else None
         self.batch_size = batch_size
         self.inference_size = inference_size
         self.jpeg_quality = jpeg_quality
@@ -114,6 +116,7 @@ class RemoteSwimmerDetector:
         return cls(
             base_url=config["VISION_BASE_URL"],
             auth_token=config.get("VISION_AUTH_TOKEN", ""),
+            lap_calibration_id=config.get("VISION_LAP_CALIBRATION_ID"),
             batch_size=int(config["VISION_BATCH_SIZE"]),
             inference_size=int(config["VISION_INFERENCE_SIZE"]),
             jpeg_quality=int(config["VISION_JPEG_QUALITY"]),
@@ -206,10 +209,13 @@ class RemoteSwimmerDetector:
         )
 
     def _create_session(self, client: httpx.Client, fps: float) -> str:
+        payload: dict[str, float | str] = {"fps": fps}
+        if self.lap_calibration_id is not None:
+            payload["lap_calibration_id"] = self.lap_calibration_id
         try:
             response = client.post(
                 f"{self.base_url}/v1/tracking-sessions",
-                json={"fps": fps},
+                json=payload,
             )
         except httpx.HTTPError as exc:
             raise RemoteDetectorError(
@@ -334,14 +340,22 @@ class RemoteSwimmerDetector:
             if not isinstance(boxes, list):
                 raise RemoteDetectorError("La respuesta IA contiene boxes inválidas.")
 
-            normalized.append(
-                {
-                    "time": float(result.get("time_ms", expected.time_ms)) / 1000.0,
-                    "width": expected.original_width,
-                    "height": expected.original_height,
-                    "boxes": [self._normalize_box(box) for box in boxes],
-                }
-            )
+            normalized_frame = {
+                "time": float(result.get("time_ms", expected.time_ms)) / 1000.0,
+                "width": expected.original_width,
+                "height": expected.original_height,
+                "boxes": [self._normalize_box(box) for box in boxes],
+            }
+            lap_scores = result.get("lap_scores")
+            if lap_scores is not None:
+                if not isinstance(lap_scores, list):
+                    raise RemoteDetectorError(
+                        "La respuesta IA contiene lap_scores inválidos."
+                    )
+                normalized_frame["lap_scores"] = [
+                    self._normalize_lap_score(score) for score in lap_scores
+                ]
+            normalized.append(normalized_frame)
         return normalized
 
     @staticmethod
@@ -364,6 +378,81 @@ class RemoteSwimmerDetector:
             raise RemoteDetectorError(
                 "La respuesta IA contiene valores de bbox inválidos."
             ) from exc
+
+    @staticmethod
+    def _normalize_lap_score(score: Any) -> dict[str, Any]:
+        if not isinstance(score, dict):
+            raise RemoteDetectorError("La respuesta IA contiene un lap_score inválido.")
+        required = (
+            "lane_id",
+            "lap_score",
+            "observation_quality",
+            "evaluable",
+            "window_start_ms",
+            "window_end_ms",
+            "score_version",
+            "evidence",
+        )
+        if any(key not in score for key in required):
+            raise RemoteDetectorError("La respuesta IA contiene un lap_score incompleto.")
+        evidence = score["evidence"]
+        evidence_fields = ("wall", "approach", "reversal", "departure", "track_quality")
+        if not isinstance(evidence, dict) or any(key not in evidence for key in evidence_fields):
+            raise RemoteDetectorError("La respuesta IA contiene evidencia de vuelta inválida.")
+        if not isinstance(score["lane_id"], str) or not score["lane_id"]:
+            raise RemoteDetectorError("La respuesta IA contiene un lane_id inválido.")
+        if not isinstance(score["score_version"], str) or not score["score_version"]:
+            raise RemoteDetectorError("La respuesta IA contiene una versión de score inválida.")
+        if not isinstance(score["evaluable"], bool):
+            raise RemoteDetectorError("La respuesta IA contiene un estado evaluable inválido.")
+
+        def unit_value(value: Any, field: str) -> float:
+            try:
+                normalized = float(value)
+            except (TypeError, ValueError) as exc:
+                raise RemoteDetectorError(
+                    f"La respuesta IA contiene {field} inválido."
+                ) from exc
+            if not 0.0 <= normalized <= 1.0:
+                raise RemoteDetectorError(
+                    f"La respuesta IA contiene {field} fuera de rango."
+                )
+            return normalized
+
+        try:
+            normalized = {
+                "lane_id": score["lane_id"],
+                "lap_score": unit_value(score["lap_score"], "lap_score"),
+                "observation_quality": unit_value(
+                    score["observation_quality"], "observation_quality"
+                ),
+                "evaluable": score["evaluable"],
+                "window_start_ms": float(score["window_start_ms"]),
+                "window_end_ms": float(score["window_end_ms"]),
+                "score_version": score["score_version"],
+                "evidence": {
+                    field: unit_value(evidence[field], f"evidence.{field}")
+                    for field in evidence_fields
+                },
+            }
+            optional_unit_fields = ("no_lap_score", "longitudinal_position")
+            for field in optional_unit_fields:
+                if score.get(field) is not None:
+                    normalized[field] = unit_value(score[field], field)
+            if score.get("track_id") is not None:
+                normalized["track_id"] = int(score["track_id"])
+            if score.get("candidate_time_ms") is not None:
+                normalized["candidate_time_ms"] = float(score["candidate_time_ms"])
+        except (TypeError, ValueError) as exc:
+            raise RemoteDetectorError(
+                "La respuesta IA contiene valores de lap_score inválidos."
+            ) from exc
+        endpoint = score.get("endpoint")
+        if endpoint is not None:
+            if endpoint not in {"far", "near"}:
+                raise RemoteDetectorError("La respuesta IA contiene un endpoint inválido.")
+            normalized["endpoint"] = endpoint
+        return normalized
 
     def _close_session(self, client: httpx.Client, session_id: str) -> None:
         """Cierre best-effort; el TTL remoto cubre una caída total de red."""

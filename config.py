@@ -21,6 +21,9 @@ class Config:
     # Servicio independiente de visión (RT-DETRv2 + ByteTrack) en la GPU.
     VISION_BASE_URL = os.getenv("VISION_BASE_URL", "http://localhost:8001")
     VISION_AUTH_TOKEN = os.getenv("VISION_AUTH_TOKEN", "")
+    VISION_LAP_CALIBRATION_ID = os.getenv(
+        "VISION_LAP_CALIBRATION_ID", "fixed-camera-v1"
+    )
     VISION_BATCH_SIZE = int(os.getenv("VISION_BATCH_SIZE", "8"))
     VISION_INFERENCE_SIZE = int(os.getenv("VISION_INFERENCE_SIZE", "640"))
     VISION_JPEG_QUALITY = int(os.getenv("VISION_JPEG_QUALITY", "85"))

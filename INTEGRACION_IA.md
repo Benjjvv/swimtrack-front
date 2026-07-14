@@ -14,7 +14,7 @@ Browser ← SSE por frame      ← Flask ← JSON por batch ← RT-DETRv2 + Byte
 3. Cada frame conserva `frame_index`, timestamp y dimensiones originales, pero se redimensiona a 640×640 y se comprime como JPEG para el transporte.
 4. Los frames se agrupan según `VISION_BATCH_SIZE` y se envían secuencialmente a `POST /v1/tracking-sessions/{session_id}/batches`.
 5. RT-DETRv2 procesa internamente los frames de a uno en esta primera versión y ByteTrack actualiza la misma sesión en orden.
-6. Flask convierte `time_ms` a segundos, agrega el conteo acumulado de IDs y emite el evento SSE `{time,width,height,boxes,count}`.
+6. Flask convierte `time_ms` a segundos, agrega el conteo acumulado de IDs y emite el evento SSE `{time,width,height,boxes,count,lap_scores?}`. El campo opcional `lap_scores` se propaga sin modificar `count`.
 7. Al terminar, fallar o desconectarse el navegador, Flask cierra la sesión remota y elimina el archivo temporal. El TTL del servicio IA cubre una caída total de red durante el cleanup.
 
 ## Contrato del servicio IA
@@ -70,8 +70,9 @@ Se reintentan errores de transporte y HTTP `408`, `425`, `429`, `500`, `502`, `5
 
 | Variable | Default | Uso |
 |---|---:|---|
-| `VISION_BASE_URL` | `http://localhost:8001` | URL privada del servicio GPU; usa `http://127.0.0.1:18001` con el SSH tunnel recomendado. |
+| `VISION_BASE_URL` | `http://localhost:8001` | URL privada del servicio GPU; en este despliegue usa `http://10.0.218.101:7001`. |
 | `VISION_AUTH_TOKEN` | vacío | Token enviado en `X-Swimtrack-Auth`. |
+| `VISION_LAP_CALIBRATION_ID` | `fixed-camera-v1` | Calibración de perspectiva y carril solicitada al crear la sesión; vacío deshabilita el score. |
 | `VISION_BATCH_SIZE` | `8` | Frames por request HTTP. |
 | `VISION_INFERENCE_SIZE` | `640` | Ancho y alto del JPEG enviado. |
 | `VISION_JPEG_QUALITY` | `85` | Calidad JPEG de OpenCV. |
@@ -88,42 +89,34 @@ Se reintentan errores de transporte y HTTP `408`, `425`, `429`, `500`, `502`, `5
 
 El valor de `VISION_AUTH_TOKEN` en este repo debe coincidir con `SWIMTRACK_AUTH_TOKEN` en `swimtrack-ai`.
 
-En producción, conecta ambas máquinas mediante el SSH tunnel descrito abajo, una red privada o una VPN. Si expones el servicio por TCP, termina TLS en un reverse proxy; el token no debe viajar por Internet usando HTTP plano. Configura también `MAX_CONTENT_LENGTH` y límites equivalentes en Apache/Nginx para rechazar videos excesivos antes de escribirlos a disco.
+En producción, conecta ambas máquinas mediante una red privada o una VPN y restringe el puerto de AI por origen. Esta VM temporal utiliza el rango ya abierto y sólo el token para proteger las rutas privadas; no expongas el servicio por TCP fuera de esta red temporal, porque el token no debe viajar por Internet usando HTTP plano. Configura también `MAX_CONTENT_LENGTH` y límites equivalentes en Apache/Nginx para rechazar videos excesivos antes de escribirlos a disco.
 
-## Conexión recomendada sin Docker ni sudo
+## Conexión directa privada
 
-Ejecuta `swimtrack-ai` como proceso nativo con `uv` en la máquina GPU y haz que Uvicorn escuche solamente en loopback (`127.0.0.1:8001`). Desde la máquina del front, abre un SSH tunnel que publique ese servicio en el puerto local `18001`:
+Ejecuta `swimtrack-ai` como proceso nativo con `uv` en la máquina GPU y haz que Uvicorn escuche solamente en su IP privada (`10.0.218.101:7001`). La VM temporal ya tiene el rango `7000-7099` abierto y el rol Ansible no modifica UFW. Conserva el bind específico de la IP privada, exige `SWIMTRACK_AUTH_TOKEN` y no reutilices esta exposición sin una ACL por origen en un entorno persistente.
 
-```bash
-ssh -NT \
-  -o ExitOnForwardFailure=yes \
-  -o ServerAliveInterval=30 \
-  -L 127.0.0.1:18001:127.0.0.1:8001 \
-  <usuario>@<gpu-host>
-```
-
-Mientras esa sesión SSH permanezca activa, el recorrido es:
+El recorrido queda así:
 
 ```text
-Flask → http://127.0.0.1:18001 → SSH cifrado → GPU http://127.0.0.1:8001
+Flask en 10.0.218.111 → http://10.0.218.101:7001 → Uvicorn en GPU
 ```
 
-Configura el front con la URL local y exactamente el mismo token usado como `SWIMTRACK_AUTH_TOKEN` en la máquina GPU:
+Configura el Front con la URL privada y exactamente el mismo token usado como `SWIMTRACK_AUTH_TOKEN` en la máquina GPU:
 
 ```dotenv
-VISION_BASE_URL=http://127.0.0.1:18001
+VISION_BASE_URL=http://10.0.218.101:7001
 VISION_AUTH_TOKEN=<mismo-token-de-swimtrack-ai>
 ```
 
-Este esquema no requiere Docker, sudo, abrir el puerto 8001 en el firewall ni enviar el token por HTTP sin cifrar. Si el front y `swimtrack-ai` se ejecutan excepcionalmente en la misma máquina, puedes usar `VISION_BASE_URL=http://127.0.0.1:8001` y omitir el tunnel.
+El despliegue no requiere privilegios de administrador. El servicio AI sigue ejecutándose como usuario y el token se transfiere por HTTP únicamente dentro de la red privada temporal. Si el Front y `swimtrack-ai` se ejecutan excepcionalmente en la misma máquina, puedes usar `VISION_BASE_URL=http://127.0.0.1:8001`.
 
 ## Smoke test end-to-end
 
-Con `swimtrack-ai` ejecutándose en la máquina GPU y el SSH tunnel activo, valida primero que el servicio remoto responda a través del puerto local:
+Con `swimtrack-ai` ejecutándose en la máquina GPU, valida desde la máquina del Front que el servicio privado responda:
 
 ```bash
-curl --fail --show-error http://127.0.0.1:18001/healthz
-curl --fail --show-error http://127.0.0.1:18001/readyz
+curl --fail --show-error http://10.0.218.101:7001/healthz
+curl --fail --show-error http://10.0.218.101:7001/readyz
 ```
 
 Inicia el front desde `swimtrack-front/`:
