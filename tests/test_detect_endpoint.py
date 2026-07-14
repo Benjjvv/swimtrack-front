@@ -26,7 +26,7 @@ class FakeDetector:
                     "evaluable": False,
                     "window_start_ms": 0.0,
                     "window_end_ms": 0.0,
-                    "score_version": "trajectory-v4",
+                    "score_version": "trajectory-v5",
                     "evidence": {
                         "wall": 0.0,
                         "approach": 0.0,
@@ -72,7 +72,7 @@ def test_detect_preserves_sse_contract_and_removes_upload():
     assert response.mimetype == "text/event-stream"
     assert [frame["count"] for frame in frames] == [1, 2]
     assert frames[0]["lap_scores"][0]["lane_id"] == "center"
-    assert frames[0]["lap_scores"][0]["score_version"] == "trajectory-v4"
+    assert frames[0]["lap_scores"][0]["score_version"] == "trajectory-v5"
     assert detector.existed_during_stream
     assert not os.path.exists(detector.video_path)
 
