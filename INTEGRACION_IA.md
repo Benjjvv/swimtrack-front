@@ -14,7 +14,7 @@ Browser ← SSE por frame      ← Flask ← JSON por batch ← RT-DETRv2 + Byte
 3. Cada frame conserva `frame_index`, timestamp y dimensiones originales, pero se redimensiona a 640×640 y se comprime como JPEG para el transporte.
 4. Los frames se agrupan según `VISION_BATCH_SIZE` y se envían secuencialmente a `POST /v1/tracking-sessions/{session_id}/batches`.
 5. RT-DETRv2 procesa internamente los frames de a uno en esta primera versión y ByteTrack actualiza la misma sesión en orden.
-6. Flask convierte `time_ms` a segundos, agrega el conteo acumulado de IDs y emite el evento SSE `{time,width,height,boxes,count,lap_scores?}`. El campo opcional `lap_scores` se propaga sin modificar `count`.
+6. Flask convierte `time_ms` a segundos, agrega el conteo acumulado de IDs y emite el evento SSE `{time,width,height,boxes,count,lap_scores?,tracking_diagnostics?}`. Los campos opcionales se validan y propagan sin modificar `count`.
 7. Al terminar, fallar o desconectarse el navegador, Flask cierra la sesión remota y elimina el archivo temporal. El TTL del servicio IA cubre una caída total de red durante el cleanup.
 
 ## Contrato del servicio IA
@@ -73,6 +73,7 @@ Se reintentan errores de transporte y HTTP `408`, `425`, `429`, `500`, `502`, `5
 | `VISION_BASE_URL` | `http://localhost:8001` | URL privada del servicio GPU; en este despliegue usa `http://10.0.218.101:7001`. |
 | `VISION_AUTH_TOKEN` | vacío | Token enviado en `X-Swimtrack-Auth`. |
 | `VISION_LAP_CALIBRATION_ID` | `fixed-camera-v1` | Calibración de perspectiva y carril solicitada al crear la sesión; vacío deshabilita el score. |
+| `VISION_TRACKING_DIAGNOSTICS` | `none` | Diagnostics de tracking por frame: `none`, `counts` o `boxes`; los dos últimos son opt-in para experimentos. |
 | `VISION_BATCH_SIZE` | `8` | Frames por request HTTP. |
 | `VISION_INFERENCE_SIZE` | `640` | Ancho y alto del JPEG enviado. |
 | `VISION_JPEG_QUALITY` | `85` | Calidad JPEG de OpenCV. |

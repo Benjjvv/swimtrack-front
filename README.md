@@ -47,6 +47,7 @@ Abrir <http://localhost:7001>.
 | `VISION_BASE_URL` | URL privada de `swimtrack-ai`; en este despliegue usa `http://10.0.218.101:7001`. |
 | `VISION_AUTH_TOKEN` | Token compartido con `swimtrack-ai`. |
 | `VISION_LAP_CALIBRATION_ID` | Calibración fija solicitada al crear la sesión; default `fixed-camera-v1`. |
+| `VISION_TRACKING_DIAGNOSTICS` | Instrumentación opt-in por frame: `none` (default), `counts` o `boxes`. |
 | `VISION_BATCH_SIZE` | Cantidad de frames JPEG enviados por request; default `8`. |
 | `VISION_INFERENCE_SIZE` | Resolución cuadrada enviada al modelo; default `640`. |
 | `VISION_JPEG_QUALITY` | Calidad de compresión de los frames; default `85`. |
@@ -73,7 +74,7 @@ uv run --with ruff ruff check .
 
 ### `POST /api/detect`
 
-Recibe `multipart/form-data` con el campo `video`, crea una sesión de tracking remota y responde `text/event-stream`. Cada evento contiene `{time,width,height,boxes,count,lap_scores?}`. `lap_scores` conserva el score heurístico y la evidencia por carril cuando la calibración está habilitada; `count` mantiene su semántica histórica de IDs acumulados. El archivo temporal y la sesión remota se limpian al terminar, fallar o cortar el stream. Consulta [INTEGRACION_IA.md](INTEGRACION_IA.md) para el contrato completo.
+Recibe `multipart/form-data` con el campo `video`, crea una sesión de tracking remota y responde `text/event-stream`. Cada evento contiene `{time,width,height,boxes,count,lap_scores?,tracking_diagnostics?}`. `lap_scores` conserva el score heurístico y la evidencia por carril cuando la calibración está habilitada; `tracking_diagnostics` aparece sólo si se habilita explícitamente y `count` mantiene su semántica histórica de IDs acumulados. El archivo temporal y la sesión remota se limpian al terminar, fallar o cortar el stream. Consulta [INTEGRACION_IA.md](INTEGRACION_IA.md) para el contrato completo.
 
 ### `POST /api/ai/analyze`
 

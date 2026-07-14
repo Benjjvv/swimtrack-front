@@ -24,6 +24,7 @@ class Config:
     VISION_LAP_CALIBRATION_ID = os.getenv(
         "VISION_LAP_CALIBRATION_ID", "fixed-camera-v1"
     )
+    VISION_TRACKING_DIAGNOSTICS = os.getenv("VISION_TRACKING_DIAGNOSTICS", "none")
     VISION_BATCH_SIZE = int(os.getenv("VISION_BATCH_SIZE", "8"))
     VISION_INFERENCE_SIZE = int(os.getenv("VISION_INFERENCE_SIZE", "640"))
     VISION_JPEG_QUALITY = int(os.getenv("VISION_JPEG_QUALITY", "85"))

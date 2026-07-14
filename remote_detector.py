@@ -14,7 +14,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import cv2
 import httpx
@@ -59,6 +59,7 @@ class RemoteSwimmerDetector:
         base_url: str,
         auth_token: str,
         lap_calibration_id: str | None = None,
+        tracking_diagnostics: Literal["none", "counts", "boxes"] = "none",
         batch_size: int = 8,
         inference_size: int = 640,
         jpeg_quality: int = 85,
@@ -88,10 +89,22 @@ class RemoteSwimmerDetector:
             raise ValueError("VISION_CLEANUP_TIMEOUT debe ser mayor que cero.")
         if fallback_fps <= 0:
             raise ValueError("VISION_FALLBACK_FPS debe ser mayor que cero.")
+        if not isinstance(tracking_diagnostics, str):
+            raise ValueError(
+                "VISION_TRACKING_DIAGNOSTICS debe ser none, counts o boxes."
+            )
+        tracking_diagnostics = tracking_diagnostics.strip().lower()
+        if tracking_diagnostics not in {"none", "counts", "boxes"}:
+            raise ValueError(
+                "VISION_TRACKING_DIAGNOSTICS debe ser none, counts o boxes."
+            )
 
         self.base_url = base_url.rstrip("/")
         self.auth_token = auth_token
-        self.lap_calibration_id = lap_calibration_id.strip() if lap_calibration_id else None
+        self.lap_calibration_id = (
+            lap_calibration_id.strip() if lap_calibration_id else None
+        )
+        self.tracking_diagnostics = tracking_diagnostics
         self.batch_size = batch_size
         self.inference_size = inference_size
         self.jpeg_quality = jpeg_quality
@@ -117,6 +130,7 @@ class RemoteSwimmerDetector:
             base_url=config["VISION_BASE_URL"],
             auth_token=config.get("VISION_AUTH_TOKEN", ""),
             lap_calibration_id=config.get("VISION_LAP_CALIBRATION_ID"),
+            tracking_diagnostics=config.get("VISION_TRACKING_DIAGNOSTICS", "none"),
             batch_size=int(config["VISION_BATCH_SIZE"]),
             inference_size=int(config["VISION_INFERENCE_SIZE"]),
             jpeg_quality=int(config["VISION_JPEG_QUALITY"]),
@@ -212,6 +226,8 @@ class RemoteSwimmerDetector:
         payload: dict[str, float | str] = {"fps": fps}
         if self.lap_calibration_id is not None:
             payload["lap_calibration_id"] = self.lap_calibration_id
+        if self.tracking_diagnostics != "none":
+            payload["diagnostics"] = self.tracking_diagnostics
         try:
             response = client.post(
                 f"{self.base_url}/v1/tracking-sessions",
@@ -355,6 +371,11 @@ class RemoteSwimmerDetector:
                 normalized_frame["lap_scores"] = [
                     self._normalize_lap_score(score) for score in lap_scores
                 ]
+            tracking_diagnostics = result.get("tracking_diagnostics")
+            if tracking_diagnostics is not None:
+                normalized_frame["tracking_diagnostics"] = (
+                    self._normalize_tracking_diagnostics(tracking_diagnostics)
+                )
             normalized.append(normalized_frame)
         return normalized
 
@@ -394,17 +415,27 @@ class RemoteSwimmerDetector:
             "evidence",
         )
         if any(key not in score for key in required):
-            raise RemoteDetectorError("La respuesta IA contiene un lap_score incompleto.")
+            raise RemoteDetectorError(
+                "La respuesta IA contiene un lap_score incompleto."
+            )
         evidence = score["evidence"]
         evidence_fields = ("wall", "approach", "reversal", "departure", "track_quality")
-        if not isinstance(evidence, dict) or any(key not in evidence for key in evidence_fields):
-            raise RemoteDetectorError("La respuesta IA contiene evidencia de vuelta inválida.")
+        if not isinstance(evidence, dict) or any(
+            key not in evidence for key in evidence_fields
+        ):
+            raise RemoteDetectorError(
+                "La respuesta IA contiene evidencia de vuelta inválida."
+            )
         if not isinstance(score["lane_id"], str) or not score["lane_id"]:
             raise RemoteDetectorError("La respuesta IA contiene un lane_id inválido.")
         if not isinstance(score["score_version"], str) or not score["score_version"]:
-            raise RemoteDetectorError("La respuesta IA contiene una versión de score inválida.")
+            raise RemoteDetectorError(
+                "La respuesta IA contiene una versión de score inválida."
+            )
         if not isinstance(score["evaluable"], bool):
-            raise RemoteDetectorError("La respuesta IA contiene un estado evaluable inválido.")
+            raise RemoteDetectorError(
+                "La respuesta IA contiene un estado evaluable inválido."
+            )
 
         def unit_value(value: Any, field: str) -> float:
             try:
@@ -450,9 +481,160 @@ class RemoteSwimmerDetector:
         endpoint = score.get("endpoint")
         if endpoint is not None:
             if endpoint not in {"far", "near"}:
-                raise RemoteDetectorError("La respuesta IA contiene un endpoint inválido.")
+                raise RemoteDetectorError(
+                    "La respuesta IA contiene un endpoint inválido."
+                )
             normalized["endpoint"] = endpoint
         return normalized
+
+    @classmethod
+    def _normalize_tracking_diagnostics(cls, diagnostics: Any) -> dict[str, Any]:
+        if not isinstance(diagnostics, dict):
+            raise RemoteDetectorError(
+                "La respuesta IA contiene tracking_diagnostics inválidos."
+            )
+        required = (
+            "diagnostic_floor",
+            "person_candidates",
+            "detector_accepted",
+            "lanes",
+        )
+        if any(field not in diagnostics for field in required):
+            raise RemoteDetectorError(
+                "La respuesta IA contiene tracking_diagnostics incompletos."
+            )
+
+        try:
+            diagnostic_floor = float(diagnostics["diagnostic_floor"])
+        except (TypeError, ValueError) as exc:
+            raise RemoteDetectorError(
+                "La respuesta IA contiene diagnostic_floor inválido."
+            ) from exc
+        if not math.isfinite(diagnostic_floor) or not 0.0 <= diagnostic_floor <= 1.0:
+            raise RemoteDetectorError(
+                "La respuesta IA contiene diagnostic_floor fuera de rango."
+            )
+
+        lanes = diagnostics["lanes"]
+        if not isinstance(lanes, list):
+            raise RemoteDetectorError(
+                "La respuesta IA contiene lanes de diagnostics inválidos."
+            )
+
+        return {
+            "diagnostic_floor": diagnostic_floor,
+            "person_candidates": cls._normalize_diagnostic_group(
+                diagnostics["person_candidates"], "person_candidates"
+            ),
+            "detector_accepted": cls._normalize_diagnostic_group(
+                diagnostics["detector_accepted"], "detector_accepted"
+            ),
+            "lanes": [cls._normalize_lane_diagnostics(lane) for lane in lanes],
+        }
+
+    @classmethod
+    def _normalize_lane_diagnostics(cls, lane: Any) -> dict[str, Any]:
+        if not isinstance(lane, dict):
+            raise RemoteDetectorError(
+                "La respuesta IA contiene diagnostics de carril inválidos."
+            )
+        required = (
+            "lane_id",
+            "after_roi",
+            "active_track_ids",
+            "retained_lost_track_count",
+        )
+        if any(field not in lane for field in required):
+            raise RemoteDetectorError(
+                "La respuesta IA contiene diagnostics de carril incompletos."
+            )
+        if not isinstance(lane["lane_id"], str) or not lane["lane_id"]:
+            raise RemoteDetectorError(
+                "La respuesta IA contiene un lane_id de diagnostics inválido."
+            )
+
+        active_track_ids = lane["active_track_ids"]
+        if not isinstance(active_track_ids, list) or any(
+            not cls._is_integer(track_id) for track_id in active_track_ids
+        ):
+            raise RemoteDetectorError(
+                "La respuesta IA contiene active_track_ids inválidos."
+            )
+        retained_lost_track_count = lane["retained_lost_track_count"]
+        if (
+            not cls._is_integer(retained_lost_track_count)
+            or retained_lost_track_count < 0
+        ):
+            raise RemoteDetectorError(
+                "La respuesta IA contiene retained_lost_track_count inválido."
+            )
+
+        return {
+            "lane_id": lane["lane_id"],
+            "after_roi": cls._normalize_diagnostic_group(
+                lane["after_roi"], "after_roi"
+            ),
+            "active_track_ids": [int(track_id) for track_id in active_track_ids],
+            "retained_lost_track_count": int(retained_lost_track_count),
+        }
+
+    @classmethod
+    def _normalize_diagnostic_group(cls, group: Any, field: str) -> dict[str, Any]:
+        if not isinstance(group, dict) or "count" not in group:
+            raise RemoteDetectorError(
+                f"La respuesta IA contiene {field} de diagnostics inválido."
+            )
+        count = group["count"]
+        if not cls._is_integer(count) or count < 0:
+            raise RemoteDetectorError(
+                f"La respuesta IA contiene count de {field} inválido."
+            )
+
+        normalized: dict[str, Any] = {"count": int(count)}
+        boxes = group.get("boxes")
+        if boxes is not None:
+            if not isinstance(boxes, list):
+                raise RemoteDetectorError(
+                    f"La respuesta IA contiene boxes de {field} inválidas."
+                )
+            normalized_boxes = [cls._normalize_diagnostic_box(box) for box in boxes]
+            if len(normalized_boxes) != count:
+                raise RemoteDetectorError(
+                    f"La respuesta IA contiene count y boxes inconsistentes en {field}."
+                )
+            normalized["boxes"] = normalized_boxes
+        return normalized
+
+    @staticmethod
+    def _normalize_diagnostic_box(box: Any) -> dict[str, float]:
+        if not isinstance(box, dict):
+            raise RemoteDetectorError(
+                "La respuesta IA contiene una diagnostic bbox inválida."
+            )
+        required = ("x1", "y1", "x2", "y2", "conf")
+        if any(field not in box for field in required):
+            raise RemoteDetectorError(
+                "La respuesta IA contiene una diagnostic bbox incompleta."
+            )
+        try:
+            normalized = {field: float(box[field]) for field in required}
+        except (TypeError, ValueError) as exc:
+            raise RemoteDetectorError(
+                "La respuesta IA contiene valores de diagnostic bbox inválidos."
+            ) from exc
+        if any(not math.isfinite(value) for value in normalized.values()):
+            raise RemoteDetectorError(
+                "La respuesta IA contiene valores de diagnostic bbox inválidos."
+            )
+        if not 0.0 <= normalized["conf"] <= 1.0:
+            raise RemoteDetectorError(
+                "La respuesta IA contiene conf de diagnostic bbox fuera de rango."
+            )
+        return normalized
+
+    @staticmethod
+    def _is_integer(value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool)
 
     def _close_session(self, client: httpx.Client, session_id: str) -> None:
         """Cierre best-effort; el TTL remoto cubre una caída total de red."""

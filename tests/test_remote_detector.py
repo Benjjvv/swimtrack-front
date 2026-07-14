@@ -3,6 +3,7 @@ import uuid
 
 import httpx
 import numpy as np
+import pytest
 
 import remote_detector
 from remote_detector import RemoteSwimmerDetector
@@ -32,10 +33,18 @@ class FakeCapture:
 
 
 class FakeVisionClient:
-    def __init__(self, *, transient_first_batch=False, include_lap_scores=False, **kwargs):
+    def __init__(
+        self,
+        *,
+        transient_first_batch=False,
+        include_lap_scores=False,
+        tracking_diagnostics_payload=None,
+        **kwargs,
+    ):
         self.kwargs = kwargs
         self.transient_first_batch = transient_first_batch
         self.include_lap_scores = include_lap_scores
+        self.tracking_diagnostics_payload = tracking_diagnostics_payload
         self.session_payloads = []
         self.batch_calls = []
         self.deleted = []
@@ -103,6 +112,10 @@ class FakeVisionClient:
                         },
                     }
                 ]
+            if self.tracking_diagnostics_payload is not None:
+                response_frame["tracking_diagnostics"] = (
+                    self.tracking_diagnostics_payload
+                )
             response_frames.append(response_frame)
         return httpx.Response(
             200,
@@ -130,6 +143,8 @@ def _build_detector(
     transient_first_batch=False,
     lap_calibration_id=None,
     include_lap_scores=False,
+    tracking_diagnostics="none",
+    tracking_diagnostics_payload=None,
 ):
     frames = [np.zeros((20, 40, 3), dtype=np.uint8) for _ in range(3)]
     capture = FakeCapture(frames)
@@ -137,12 +152,14 @@ def _build_detector(
     client = FakeVisionClient(
         transient_first_batch=transient_first_batch,
         include_lap_scores=include_lap_scores,
+        tracking_diagnostics_payload=tracking_diagnostics_payload,
     )
     batch_ids = iter((uuid.UUID(int=1), uuid.UUID(int=2), uuid.UUID(int=3)))
     detector = RemoteSwimmerDetector(
         base_url="http://vision.test/",
         auth_token="secret",
         lap_calibration_id=lap_calibration_id,
+        tracking_diagnostics=tracking_diagnostics,
         batch_size=2,
         max_retries=2,
         retry_backoff_seconds=0,
@@ -209,6 +226,111 @@ def test_stream_enables_and_forwards_fixed_camera_lap_scores(monkeypatch):
     assert score["lane_id"] == "center"
     assert score["lap_score"] == 0.82
     assert score["evidence"]["reversal"] == 0.88
+
+
+def test_stream_requests_and_forwards_tracking_diagnostics(monkeypatch):
+    diagnostics = {
+        "diagnostic_floor": 0.1,
+        "person_candidates": {
+            "count": 2,
+            "boxes": [
+                {"x1": 1, "y1": 2, "x2": 10, "y2": 12, "conf": 0.14},
+                {"x1": 3, "y1": 4, "x2": 13, "y2": 14, "conf": 0.8},
+            ],
+        },
+        "detector_accepted": {
+            "count": 1,
+            "boxes": [{"x1": 3, "y1": 4, "x2": 13, "y2": 14, "conf": 0.8}],
+        },
+        "lanes": [
+            {
+                "lane_id": "center",
+                "after_roi": {
+                    "count": 1,
+                    "boxes": [{"x1": 3, "y1": 4, "x2": 13, "y2": 14, "conf": 0.8}],
+                },
+                "active_track_ids": [7],
+                "retained_lost_track_count": 2,
+            }
+        ],
+    }
+    detector, _capture, client = _build_detector(
+        monkeypatch,
+        tracking_diagnostics="boxes",
+        tracking_diagnostics_payload=diagnostics,
+    )
+
+    results = list(detector.stream("video.mp4"))
+
+    assert client.session_payloads == [{"fps": 2.0, "diagnostics": "boxes"}]
+    forwarded = results[0]["tracking_diagnostics"]
+    assert forwarded["diagnostic_floor"] == 0.1
+    assert forwarded["person_candidates"]["count"] == 2
+    assert forwarded["person_candidates"]["boxes"][0] == {
+        "x1": 1.0,
+        "y1": 2.0,
+        "x2": 10.0,
+        "y2": 12.0,
+        "conf": 0.14,
+    }
+    assert forwarded["lanes"] == [
+        {
+            "lane_id": "center",
+            "after_roi": {
+                "count": 1,
+                "boxes": [
+                    {
+                        "x1": 3.0,
+                        "y1": 4.0,
+                        "x2": 13.0,
+                        "y2": 14.0,
+                        "conf": 0.8,
+                    }
+                ],
+            },
+            "active_track_ids": [7],
+            "retained_lost_track_count": 2,
+        }
+    ]
+
+
+def test_stream_rejects_malformed_tracking_diagnostics(monkeypatch):
+    detector, capture, client = _build_detector(
+        monkeypatch,
+        tracking_diagnostics="counts",
+        tracking_diagnostics_payload={
+            "diagnostic_floor": 0.1,
+            "person_candidates": {"count": 1},
+            "detector_accepted": {"count": 1},
+            "lanes": [
+                {
+                    "lane_id": "center",
+                    "after_roi": {"count": 1},
+                    "active_track_ids": "7",
+                    "retained_lost_track_count": 0,
+                }
+            ],
+        },
+    )
+
+    with pytest.raises(
+        remote_detector.RemoteDetectorError,
+        match="active_track_ids inválidos",
+    ):
+        list(detector.stream("video.mp4"))
+
+    assert capture.released
+    assert client.closed
+    assert client.deleted == ["http://vision.test/v1/tracking-sessions/session-1"]
+
+
+def test_constructor_rejects_unknown_tracking_diagnostics_mode():
+    with pytest.raises(ValueError, match="debe ser none, counts o boxes"):
+        RemoteSwimmerDetector(
+            base_url="http://vision.test",
+            auth_token="secret",
+            tracking_diagnostics="verbose",  # type: ignore[arg-type]
+        )
 
 
 def test_batch_retry_reuses_identical_id_metadata_and_bytes(monkeypatch):
