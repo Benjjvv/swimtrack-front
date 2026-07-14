@@ -7,6 +7,7 @@ Si la IA no responde, el endpoint de análisis devuelve un mock.
 """
 
 import json
+import logging
 import os
 import tempfile
 
@@ -21,10 +22,12 @@ from flask import (
 )
 
 from config import get_config
+from lap_episode_reducer import LapEpisodeReducer
 from remote_detector import RemoteSwimmerDetector
 
 # Extensiones de video que aceptamos si el navegador no manda un mimetype video/*.
 _VIDEO_EXTS = {".mp4", ".webm", ".mov", ".avi", ".mkv", ".m4v", ".ogv", ".ogg"}
+_LOGGER = logging.getLogger(__name__)
 
 
 def _looks_like_video(file):
@@ -96,13 +99,27 @@ def _remove_file(path):
         pass
 
 
-def _sse_detect(video_path, detector):
+def _sse_detect(
+    video_path,
+    detector,
+    *,
+    lap_episode_mode="shadow",
+    lap_confidence_threshold=None,
+    logger=_LOGGER,
+):
     """Generador SSE: un evento por frame siguiendo el contrato de datos.
 
     `count` = nº de IDs únicos acumulados hasta ese frame; lo calcula el BACK
     (no el detector), acumulando los ids que va viendo. El video temporal se
     borra al terminar el stream o si algo falla (finally).
     """
+    if lap_episode_mode not in {"off", "shadow"}:
+        raise ValueError("LAP_EPISODE_MODE debe ser off o shadow.")
+    reducer = (
+        LapEpisodeReducer(lap_confidence_threshold)
+        if lap_episode_mode == "shadow"
+        else None
+    )
     seen_ids = set()
     try:
         # Cada stream remoto crea su propia sesión ByteTrack, por lo que dos
@@ -111,6 +128,22 @@ def _sse_detect(video_path, detector):
             for box in frame.get("boxes", []):
                 seen_ids.add(box.get("id"))
             frame["count"] = len(seen_ids)
+            if reducer is not None:
+                decisions = reducer.observe(frame.get("lap_scores"))
+                if decisions:
+                    frame["lap_decisions"] = decisions
+                    for decision in decisions:
+                        logger.info(
+                            "lap_shadow_decision lane_id=%s episode_id=%s "
+                            "candidate_time_ms=%.3f lap_score=%.6f "
+                            "score_version=%s threshold=%.6f count_incremented=false",
+                            decision["lane_id"],
+                            decision["candidate_episode_id"],
+                            decision["candidate_time_ms"],
+                            decision["lap_score"],
+                            decision["score_version"],
+                            decision["threshold"],
+                        )
             yield f"data: {json.dumps(frame)}\n\n"
     except Exception as exc:  # noqa: BLE001
         # La IA real puede fallar a mitad (video corrupto, etc.). El 200 y los
@@ -119,6 +152,19 @@ def _sse_detect(video_path, detector):
         # vez de cortar el stream en silencio. (F2)
         yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
     finally:
+        if reducer is not None:
+            for episode in reducer.snapshot():
+                logger.info(
+                    "lap_shadow_episode_summary lane_id=%s episode_id=%s "
+                    "candidate_time_ms=%.3f max_lap_score=%.6f "
+                    "score_version=%s decision_emitted=%s",
+                    episode["lane_id"],
+                    episode["candidate_episode_id"],
+                    episode["candidate_time_ms"],
+                    episode["lap_score"],
+                    episode["score_version"],
+                    str(episode["decision_emitted"]).lower(),
+                )
         # "El video se procesa y se DESCARTA": no queda nada en disco.
         _remove_file(video_path)
 
@@ -128,6 +174,17 @@ def create_app(config_overrides=None, detector=None):
     app.config.from_object(get_config())
     if config_overrides:
         app.config.update(config_overrides)
+
+    lap_episode_mode = app.config.get("LAP_EPISODE_MODE", "shadow")
+    if not isinstance(lap_episode_mode, str):
+        raise ValueError("LAP_EPISODE_MODE debe ser off o shadow.")
+    lap_episode_mode = lap_episode_mode.strip().lower()
+    if lap_episode_mode not in {"off", "shadow"}:
+        raise ValueError("LAP_EPISODE_MODE debe ser off o shadow.")
+    lap_confidence_threshold = app.config.get("LAP_CONFIDENCE_THRESHOLD")
+    if lap_episode_mode == "shadow":
+        # Valida la configuración al iniciar, antes de abrir un response SSE.
+        LapEpisodeReducer(lap_confidence_threshold)
 
     # El adaptador no abre red ni decodifica video al construirse. Se conserva
     # en extensions para reutilizar configuración y permitir reemplazarlo en tests.
@@ -195,7 +252,13 @@ def create_app(config_overrides=None, detector=None):
 
         response = Response(
             stream_with_context(
-                _sse_detect(tmp_path, app.extensions["swimmer_detector"])
+                _sse_detect(
+                    tmp_path,
+                    app.extensions["swimmer_detector"],
+                    lap_episode_mode=lap_episode_mode,
+                    lap_confidence_threshold=lap_confidence_threshold,
+                    logger=app.logger,
+                )
             ),
             mimetype="text/event-stream",
             headers={

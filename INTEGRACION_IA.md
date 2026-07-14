@@ -14,7 +14,7 @@ Browser ← SSE por frame      ← Flask ← JSON por batch ← RT-DETRv2 + Byte
 3. Cada frame conserva `frame_index`, timestamp y dimensiones originales, pero se redimensiona a 640×640 y se comprime como JPEG para el transporte.
 4. Los frames se agrupan según `VISION_BATCH_SIZE` y se envían secuencialmente a `POST /v1/tracking-sessions/{session_id}/batches`.
 5. RT-DETRv2 procesa internamente los frames de a uno en esta primera versión y ByteTrack actualiza la misma sesión en orden.
-6. Flask convierte `time_ms` a segundos, agrega el conteo acumulado de IDs y emite el evento SSE `{time,width,height,boxes,count,lap_scores?,tracking_diagnostics?}`. Los campos opcionales se validan y propagan sin modificar `count`.
+6. Flask convierte `time_ms` a segundos, agrega el conteo acumulado de IDs y emite el evento SSE `{time,width,height,boxes,count,lap_scores?,tracking_diagnostics?,lap_decisions?}`. Un reducer local al request agrupa los candidatos por `(lane_id, candidate_episode_id)`, conserva el score máximo y, cuando hay un threshold configurado, publica a lo sumo una decisión shadow por episodio sin modificar `count`.
 7. Al terminar, fallar o desconectarse el navegador, Flask cierra la sesión remota y elimina el archivo temporal. El TTL del servicio IA cubre una caída total de red durante el cleanup.
 
 ## Contrato del servicio IA
@@ -85,8 +85,20 @@ Se reintentan errores de transporte y HTTP `408`, `425`, `429`, `500`, `502`, `5
 | `VISION_MAX_RETRIES` | `2` | Reintentos adicionales por batch y cleanup. |
 | `VISION_RETRY_BACKOFF_SECONDS` | `0.5` | Base del backoff exponencial. |
 | `VISION_FALLBACK_FPS` | `30` | FPS usado si OpenCV no puede leerlo. |
+| `LAP_EPISODE_MODE` | `shadow` | `shadow` reduce y registra episodios; `off` lo deshabilita. No se acepta `active` porque el conteo visible todavía no está habilitado. |
+| `LAP_CONFIDENCE_THRESHOLD` | sin valor | Threshold `[0,1]` para emitir decisiones shadow. Se deja sin default para no convertir `0.05` en una decisión de producto; puede configurarse explícitamente durante una evaluación. |
 
 `IA_BASE_URL` e `IA_SECRET_HEADER` siguen perteneciendo al coach textual de `/api/ai/analyze`; no se reutilizan para visión.
+
+## Reducer de episodios en shadow mode
+
+Cada request de video construye una instancia nueva del reducer, por lo que sesiones concurrentes y videos consecutivos no comparten estado. La key de episodio dentro de esa sesión es `(lane_id, candidate_episode_id)`. Las observaciones repetidas actualizan el máximo interno junto con su `candidate_time_ms`, pero el cruce del threshold genera como máximo un `lap_decisions`:
+
+```json
+{"lane_id":"center","candidate_episode_id":3,"candidate_time_ms":45200.0,"lap_score":0.072141,"score_version":"trajectory-v5","endpoint":"far","predicted_label":"lap","threshold":0.05,"mode":"shadow","would_increment_lap_count":true,"lap_count_incremented":false}
+```
+
+La decisión contiene el máximo disponible al momento del primer cruce. El reducer sigue conservando el máximo final y lo registra en un log sanitizado al cerrar el stream. No incluye token, frames ni bboxes. Como el protocolo actual no publica explícitamente el cierre de un episodio, emitir sólo al final introduciría una latencia indefinida; por eso se notifica el primer cruce y se evita cualquier duplicado posterior. Sin `LAP_CONFIDENCE_THRESHOLD`, shadow mode registra los episodios y sus máximos pero no emite una clasificación positiva.
 
 El valor de `VISION_AUTH_TOKEN` en este repo debe coincidir con `SWIMTRACK_AUTH_TOKEN` en `swimtrack-ai`.
 

@@ -56,6 +56,8 @@ Abrir <http://localhost:7001>.
 | `VISION_MAX_RETRIES` | Reintentos idempotentes adicionales por batch. |
 | `MAX_CONTENT_LENGTH` | Tamaño máximo del upload de video completo; default 1 GiB. |
 | `FLASK_SECRET_KEY` | Clave de sesión de Flask. |
+| `LAP_EPISODE_MODE` | Reducer de episodios: `shadow` (default) u `off`; no existe un modo que cambie el contador visible. |
+| `LAP_CONFIDENCE_THRESHOLD` | Threshold opcional `[0,1]` para decisiones shadow; sin default para no fijar un threshold de producto con el dataset de development. |
 
 `.env` no se sube al repo; `.env.example` sí.
 
@@ -74,7 +76,7 @@ uv run --with ruff ruff check .
 
 ### `POST /api/detect`
 
-Recibe `multipart/form-data` con el campo `video`, crea una sesión de tracking remota y responde `text/event-stream`. Cada evento contiene `{time,width,height,boxes,count,lap_scores?,tracking_diagnostics?}`. `lap_scores` conserva el score heurístico y la evidencia por carril cuando la calibración está habilitada; `tracking_diagnostics` aparece sólo si se habilita explícitamente y `count` mantiene su semántica histórica de IDs acumulados. El archivo temporal y la sesión remota se limpian al terminar, fallar o cortar el stream. Consulta [INTEGRACION_IA.md](INTEGRACION_IA.md) para el contrato completo.
+Recibe `multipart/form-data` con el campo `video`, crea una sesión de tracking remota y responde `text/event-stream`. Cada evento contiene `{time,width,height,boxes,count,lap_scores?,tracking_diagnostics?,lap_decisions?}`. `lap_scores` conserva el score heurístico y la evidencia por carril cuando la calibración está habilitada; `tracking_diagnostics` aparece sólo si se habilita explícitamente. En modo shadow, `lap_decisions` aparece una sola vez cuando un episodio cruza el threshold configurado y declara explícitamente que el contador no fue incrementado. `count` mantiene su semántica histórica de IDs acumulados. El archivo temporal y la sesión remota se limpian al terminar, fallar o cortar el stream. Consulta [INTEGRACION_IA.md](INTEGRACION_IA.md) para el contrato completo.
 
 ### `POST /api/ai/analyze`
 

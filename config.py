@@ -39,6 +39,11 @@ class Config:
     )
     VISION_FALLBACK_FPS = float(os.getenv("VISION_FALLBACK_FPS", "30"))
 
+    # Reducer de episodios en shadow mode. Sin un threshold explícito se
+    # registran los máximos por episodio, pero no se emiten decisiones lap.
+    LAP_EPISODE_MODE = os.getenv("LAP_EPISODE_MODE", "shadow").strip().lower()
+    LAP_CONFIDENCE_THRESHOLD = os.getenv("LAP_CONFIDENCE_THRESHOLD")
+
 
 class DevelopmentConfig(Config):
     DEBUG = True
