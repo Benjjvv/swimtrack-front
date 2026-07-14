@@ -474,6 +474,14 @@ class RemoteSwimmerDetector:
                 normalized["track_id"] = int(score["track_id"])
             if score.get("candidate_time_ms") is not None:
                 normalized["candidate_time_ms"] = float(score["candidate_time_ms"])
+            if score.get("candidate_episode_id") is not None:
+                raw_episode_id = score["candidate_episode_id"]
+                if isinstance(raw_episode_id, bool):
+                    raise ValueError("candidate_episode_id must be an integer")
+                episode_id = int(raw_episode_id)
+                if episode_id < 1 or episode_id != raw_episode_id:
+                    raise ValueError("candidate_episode_id must be a positive integer")
+                normalized["candidate_episode_id"] = episode_id
         except (TypeError, ValueError) as exc:
             raise RemoteDetectorError(
                 "La respuesta IA contiene valores de lap_score inválidos."

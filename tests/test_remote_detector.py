@@ -100,9 +100,10 @@ class FakeVisionClient:
                         "longitudinal_position": 0.91,
                         "endpoint": "near",
                         "candidate_time_ms": frame["time_ms"],
+                        "candidate_episode_id": 1,
                         "window_start_ms": 0.0,
                         "window_end_ms": frame["time_ms"],
-                        "score_version": "trajectory-v1",
+                        "score_version": "trajectory-v3",
                         "evidence": {
                             "wall": 0.96,
                             "approach": 0.84,
@@ -225,6 +226,7 @@ def test_stream_enables_and_forwards_fixed_camera_lap_scores(monkeypatch):
     score = results[0]["lap_scores"][0]
     assert score["lane_id"] == "center"
     assert score["lap_score"] == 0.82
+    assert score["candidate_episode_id"] == 1
     assert score["evidence"]["reversal"] == 0.88
 
 
