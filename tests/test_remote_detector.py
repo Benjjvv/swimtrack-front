@@ -103,7 +103,7 @@ class FakeVisionClient:
                         "candidate_episode_id": 1,
                         "window_start_ms": 0.0,
                         "window_end_ms": frame["time_ms"],
-                        "score_version": "trajectory-v3",
+                        "score_version": "trajectory-v4",
                         "evidence": {
                             "wall": 0.96,
                             "approach": 0.84,
