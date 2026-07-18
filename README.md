@@ -76,7 +76,7 @@ En la VM temporal del proyecto, `swimtrack-ai` se ejecuta nativamente con `uv` e
 uv run --with-requirements requirements.txt --with pytest python -m pytest -q
 uv run --with ruff ruff check .
 node tests/detection-playback.test.mjs
-npm install
+npm ci
 npx playwright install chromium
 npm run test:e2e
 ```
