@@ -91,7 +91,7 @@ export function clearCanvas(canvas) {
 }
 
 /**
- * Dibuja las cajas "Nadador N (XX%)" en el canvas. Iguala la resolución interna
+ * Dibuja las cajas con su porcentaje de confianza en el canvas. Iguala la resolución interna
  * del canvas a la de la fuente (video/imagen) para mapear las bbox 1:1; el CSS
  * estira el canvas al tamaño visible.
  * @param {HTMLCanvasElement} canvas
@@ -112,15 +112,12 @@ export function drawDetections(canvas, source, detections) {
   ctx.font = `${fontPx}px sans-serif`;
   ctx.textBaseline = 'top';
 
-  detections.forEach((d, i) => {
+  detections.forEach((d) => {
     const [x, y, w, h] = d.bbox;
     ctx.strokeStyle = '#22c55e';
     ctx.strokeRect(x, y, w, h);
 
-    // Etiqueta con el id real si es numérico (detección server/playback);
-    // si no (cámara/demo usan ids string), caemos al índice.
-    const n = typeof d.id === 'number' ? d.id : i + 1;
-    const label = `Nadador ${n} (${Math.round((d.score || 0) * 100)}%)`;
+    const label = `${Math.round((d.score || 0) * 100)}%`;
     const th = fontPx + 6;
     const tw = ctx.measureText(label).width + 8;
     const labelY = Math.max(0, y - th);
