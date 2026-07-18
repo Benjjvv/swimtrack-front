@@ -79,6 +79,7 @@ export class DetectionPlayback {
     this._resumePromise = null;
     this._overlay = createDetectionOverlayState();
     this._onDebugSettingsChange = null;
+    this._lastRenderedVideoTime = null;
   }
 
   /**
@@ -97,6 +98,7 @@ export class DetectionPlayback {
     this._setBuffering(true);
     this._resumePromise = null;
     resetDetectionOverlayState(this._overlay);
+    this._lastRenderedVideoTime = null;
 
     this.video.srcObject = null; // por si venía de la cámara
     this.video.src = videoUrl;
@@ -109,7 +111,12 @@ export class DetectionPlayback {
       this._pauseIfBufferRunsDry();
     };
     this.video.addEventListener('timeupdate', this._onTimeUpdate);
-    this._resizeObs = new ResizeObserver(() => this._renderCurrent());
+    this._resizeObs = new ResizeObserver(() => {
+      // Las estelas se almacenan en coordenadas del canvas visible. Al cambiar
+      // el tamaño, reiniciarlas evita mezclar posiciones de dos escalas.
+      resetDetectionOverlayState(this._overlay);
+      this._renderCurrent();
+    });
     this._resizeObs.observe(this.video);
     this._onDebugSettingsChange = () => this._renderCurrent();
     if (typeof window !== 'undefined') {
@@ -311,7 +318,13 @@ export class DetectionPlayback {
 
   /** Dibuja el frame que corresponde al video.currentTime actual. */
   _renderCurrent() {
-    const frame = this._frameAt(this.video.currentTime);
+    const currentTime = this.video.currentTime;
+    if (this._lastRenderedVideoTime !== null && currentTime < this._lastRenderedVideoTime) {
+      // Un seek o el loop del video no forman parte de la trayectoria física.
+      resetDetectionOverlayState(this._overlay);
+    }
+    this._lastRenderedVideoTime = currentTime;
+    const frame = this._frameAt(currentTime);
     if (frame) this._render(frame);
     else clearCanvas(this.canvas);
   }
@@ -376,6 +389,7 @@ export class DetectionPlayback {
     }
     this._streamDone = false;
     this._playStarted = false;
+    this._lastRenderedVideoTime = null;
     this._setBuffering(false);
     this._resumePromise = null;
     if (this._abort) {
