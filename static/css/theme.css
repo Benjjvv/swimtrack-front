@@ -248,6 +248,35 @@ code, pre, .st-mono {
   }
 }
 
+/* Indicador mientras se llena el buffer de detecciones del video subido. */
+.st-detection-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  color: #fff;
+  font-weight: 600;
+  background: rgb(3 18 26 / 0.62);
+  pointer-events: none;
+}
+
+.st-detection-spinner {
+  width: 2.4rem;
+  height: 2.4rem;
+  border: 0.24rem solid rgb(255 255 255 / 0.28);
+  border-top-color: var(--st-accent);
+  border-radius: 50%;
+  animation: st-detection-spin 0.75s linear infinite;
+}
+
+@keyframes st-detection-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* Contador de detecciones: número en mono + "+N" flotante al incrementar. */
 .st-count {
   font-family: var(--st-font-mono);
@@ -277,6 +306,10 @@ code, pre, .st-mono {
 
 /* Respeta a quien pide menos movimiento: mostramos el "+N" sin desplazarlo. */
 @media (prefers-reduced-motion: reduce) {
+  .st-detection-spinner {
+    animation: none;
+  }
+
   .st-count-badge {
     animation: st-count-fade 0.9s ease-out forwards;
   }

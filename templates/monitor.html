@@ -23,6 +23,10 @@
                src="{{ url_for('static', filename='img/demo-pool.jpg') }}"
                onerror="this.classList.add('d-none')">
           <canvas id="cameraCanvas" class="position-absolute top-0 start-0 w-100 h-100"></canvas>
+          <div id="detectionLoading" class="st-detection-loading d-none" role="status" aria-live="polite" aria-hidden="true">
+            <span class="st-detection-spinner" aria-hidden="true"></span>
+            <span>Cargando detecciones…</span>
+          </div>
           <div id="cameraPlaceholder"
                class="position-absolute top-50 start-50 translate-middle text-center text-muted px-3">
             <i class="bi bi-camera-video-off fs-1 d-block mb-2"></i>

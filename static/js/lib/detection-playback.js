@@ -46,11 +46,13 @@ export class DetectionPlayback {
    * @param {HTMLVideoElement} video
    * @param {HTMLCanvasElement} canvas
    * @param {(count:number)=>void} [onCount] callback con el count del frame.
+   * @param {(isBuffering:boolean)=>void} [onBufferingChange] actualiza la UI de espera.
    */
-  constructor(video, canvas, onCount) {
+  constructor(video, canvas, onCount, onBufferingChange) {
     this.video = video;
     this.canvas = canvas;
     this.onCount = onCount || (() => {});
+    this.onBufferingChange = onBufferingChange || (() => {});
     /** @type {Array<{time:number,width:number,height:number,boxes:any[],count:number}>} */
     this.frames = [];
     this._onTimeUpdate = null;
@@ -81,7 +83,7 @@ export class DetectionPlayback {
     this._maxCount = 0; // contador arranca de cero con cada video nuevo
     this._streamDone = false;
     this._playStarted = false;
-    this._buffering = true;
+    this._setBuffering(true);
     this._resumePromise = null;
 
     this.video.srcObject = null; // por si venía de la cámara
@@ -118,7 +120,7 @@ export class DetectionPlayback {
       }
 
       this._playStarted = true;
-      this._buffering = false;
+      this._setBuffering(false);
       this._renderCurrent();
 
       await stream;
@@ -129,6 +131,7 @@ export class DetectionPlayback {
         if (!this._streamDone && this._abort) this._abort.abort();
         this._streamDone = true;
         this._abort = null;
+        this._setBuffering(false);
       }
     }
   }
@@ -255,10 +258,16 @@ export class DetectionPlayback {
     return latest === null ? Number.NEGATIVE_INFINITY : latest - this.video.currentTime;
   }
 
+  _setBuffering(isBuffering) {
+    if (this._buffering === isBuffering) return;
+    this._buffering = isBuffering;
+    this.onBufferingChange(isBuffering);
+  }
+
   _pauseIfBufferRunsDry() {
     if (!this._playStarted || this._streamDone || this._buffering) return;
     if (this._bufferAhead() >= PAUSE_BUFFER_SECONDS) return;
-    this._buffering = true;
+    this._setBuffering(true);
     this.video.pause();
   }
 
@@ -271,13 +280,13 @@ export class DetectionPlayback {
     this._resumePromise = this.video.play()
       .then(() => {
         if (!this._isActive(runId)) return;
-        this._buffering = false;
+        this._setBuffering(false);
         this._renderCurrent();
       })
       .catch(() => {
         // El video está muted; un rechazo es excepcional. Conservamos el estado
         // pausado para no avanzar sin detecciones mientras el usuario reintenta.
-        if (this._isActive(runId)) this._buffering = true;
+        if (this._isActive(runId)) this._setBuffering(true);
       })
       .finally(() => {
         if (this._isActive(runId)) this._resumePromise = null;
@@ -333,7 +342,7 @@ export class DetectionPlayback {
     }
     this._streamDone = false;
     this._playStarted = false;
-    this._buffering = false;
+    this._setBuffering(false);
     this._resumePromise = null;
     if (this._abort) {
       this._abort.abort();

@@ -108,13 +108,17 @@ class ControlledPlayback extends DetectionPlayback {
 test('starts the SSE stream before playing and buffers detections before playback', async () => {
   const video = new FakeVideo();
   const canvas = fakeCanvas();
-  const playback = new ControlledPlayback(video, canvas);
+  const bufferingStates = [];
+  const playback = new ControlledPlayback(video, canvas, undefined, (isBuffering) => {
+    bufferingStates.push(isBuffering);
+  });
 
   const started = playback.start('blob:video', {}, '/api/detect');
   await playback.streamStarted.promise;
 
   assert.equal(playback.streamCalls, 1);
   assert.equal(video.playCalls, 0);
+  assert.deepEqual(bufferingStates, [true]);
 
   playback._ingestEvent(`data: ${JSON.stringify(frame(0))}`);
   playback._ingestEvent(`data: ${JSON.stringify(frame(1))}`);
@@ -122,18 +126,21 @@ test('starts the SSE stream before playing and buffers detections before playbac
 
   assert.equal(video.playCalls, 1);
   assert.equal(video.paused, false);
+  assert.deepEqual(bufferingStates, [true, false]);
 
   video.currentTime = 0.8;
   video.emit('timeupdate');
 
   assert.equal(video.paused, true);
   assert.equal(video.pauseCalls, 1);
+  assert.deepEqual(bufferingStates, [true, false, true]);
 
   playback._ingestEvent(`data: ${JSON.stringify(frame(1.6))}`);
   await flush();
 
   assert.equal(video.playCalls, 2);
   assert.equal(video.paused, false);
+  assert.deepEqual(bufferingStates, [true, false, true, false]);
 
   playback.streamGate.resolve();
   await started;
@@ -155,7 +162,10 @@ test('clears the overlay instead of drawing a stale frame past the SSE buffer', 
 test('reports an empty completed stream instead of waiting forever', async () => {
   const video = new FakeVideo();
   const canvas = fakeCanvas();
-  const playback = new ControlledPlayback(video, canvas);
+  const bufferingStates = [];
+  const playback = new ControlledPlayback(video, canvas, undefined, (isBuffering) => {
+    bufferingStates.push(isBuffering);
+  });
 
   const started = playback.start('blob:video', {}, '/api/detect');
   await playback.streamStarted.promise;
@@ -163,4 +173,5 @@ test('reports an empty completed stream instead of waiting forever', async () =>
 
   await assert.rejects(started, /no emitió frames/);
   assert.equal(video.playCalls, 0);
+  assert.deepEqual(bufferingStates, [true, false]);
 });

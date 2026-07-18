@@ -21,6 +21,7 @@ export function initCameraPanel() {
   const img = document.getElementById('demoImage');
   const canvas = document.getElementById('cameraCanvas');
   const placeholder = document.getElementById('cameraPlaceholder');
+  const loadingEl = document.getElementById('detectionLoading');
   const countEl = document.getElementById('detectionCount');
   const startBtn = document.getElementById('startCameraBtn');
   const demoBtn = document.getElementById('demoModeBtn');
@@ -31,7 +32,12 @@ export function initCameraPanel() {
 
   const camera = new CameraController();
   const setCount = createCounter(countEl); // escribe el count y anima "+N" al subir
-  const playback = new DetectionPlayback(video, canvas, setCount);
+  function setDetectionLoading(isBuffering) {
+    if (!loadingEl) return;
+    loadingEl.classList.toggle('d-none', !isBuffering);
+    loadingEl.setAttribute('aria-hidden', String(!isBuffering));
+  }
+  const playback = new DetectionPlayback(video, canvas, setCount, setDetectionLoading);
   /** @type {DetectionLoop|null} */
   let loop = null;
   /** @type {string|null} objectURL del video subido (hay que revocarlo). */
@@ -41,6 +47,7 @@ export function initCameraPanel() {
   function reset() {
     if (loop) { loop.stop(); loop = null; }
     playback.stop();
+    setDetectionLoading(false);
     camera.stop();
     if (objectUrl) { URL.revokeObjectURL(objectUrl); objectUrl = null; }
     video.pause();
