@@ -11,8 +11,8 @@ Browser ← SSE por frame      ← Flask ← JSON por batch ← RT-DETRv2 + Byte
 
 1. Flask valida y guarda el video en un archivo temporal.
 2. `RemoteSwimmerDetector` abre el video con OpenCV y crea una sesión remota con `POST /v1/tracking-sessions`.
-3. Cada frame conserva `frame_index`, timestamp y dimensiones originales, pero se redimensiona a 640×640 y se comprime como JPEG para el transporte.
-4. Los frames se agrupan según `VISION_BATCH_SIZE` y se envían secuencialmente a `POST /v1/tracking-sessions/{session_id}/batches`.
+3. El front conserva timestamps y dimensiones originales, pero muestrea el video hasta `VISION_MAX_FPS`, redimensiona cada frame seleccionado a 640×640 y lo comprime como JPEG para el transporte. El FPS muestreado se entrega a ByteTrack para conservar sus tiempos de retención.
+4. Los frames seleccionados se agrupan según `VISION_BATCH_SIZE` y se envían secuencialmente a `POST /v1/tracking-sessions/{session_id}/batches`.
 5. RT-DETRv2 procesa internamente los frames de a uno en esta primera versión y ByteTrack actualiza la misma sesión en orden.
 6. Flask convierte `time_ms` a segundos, agrega el conteo acumulado de IDs y emite el evento SSE `{time,width,height,boxes,count,lap_scores?,tracking_diagnostics?,lap_decisions?}`. Un reducer local al request agrupa los candidatos por `(lane_id, candidate_episode_id)`, conserva el score máximo y, cuando hay un threshold configurado, publica a lo sumo una decisión shadow por episodio sin modificar `count`.
 7. Al terminar, fallar o desconectarse el navegador, Flask cierra la sesión remota y elimina el archivo temporal. El TTL del servicio IA cubre una caída total de red durante el cleanup.
@@ -74,7 +74,8 @@ Se reintentan errores de transporte y HTTP `408`, `425`, `429`, `500`, `502`, `5
 | `VISION_AUTH_TOKEN` | vacío | Token enviado en `X-Swimtrack-Auth`. |
 | `VISION_LAP_CALIBRATION_ID` | `fixed-camera-v1` | Calibración de perspectiva y carril solicitada al crear la sesión; vacío deshabilita el score. |
 | `VISION_TRACKING_DIAGNOSTICS` | `none` | Diagnostics de tracking por frame: `none`, `counts` o `boxes`; los dos últimos son opt-in para experimentos. |
-| `VISION_BATCH_SIZE` | `8` | Frames por request HTTP. |
+| `VISION_BATCH_SIZE` | `4` | Frames por request HTTP. Un batch menor reduce el tiempo hasta las primeras detecciones. |
+| `VISION_MAX_FPS` | `15` | Límite de FPS analizados; los timestamps SSE siguen siendo los del video original. |
 | `VISION_INFERENCE_SIZE` | `640` | Ancho y alto del JPEG enviado. |
 | `VISION_JPEG_QUALITY` | `85` | Calidad JPEG de OpenCV. |
 | `VISION_CONNECT_TIMEOUT` | `5` | Timeout de conexión en segundos. |

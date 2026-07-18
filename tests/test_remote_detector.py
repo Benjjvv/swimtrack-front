@@ -1,4 +1,5 @@
 import json
+import logging
 import uuid
 
 import httpx
@@ -39,12 +40,14 @@ class FakeVisionClient:
         transient_first_batch=False,
         include_lap_scores=False,
         tracking_diagnostics_payload=None,
+        timing_headers=None,
         **kwargs,
     ):
         self.kwargs = kwargs
         self.transient_first_batch = transient_first_batch
         self.include_lap_scores = include_lap_scores
         self.tracking_diagnostics_payload = tracking_diagnostics_payload
+        self.timing_headers = timing_headers or {}
         self.session_payloads = []
         self.batch_calls = []
         self.deleted = []
@@ -120,6 +123,7 @@ class FakeVisionClient:
             response_frames.append(response_frame)
         return httpx.Response(
             200,
+            headers=self.timing_headers,
             json={
                 "session_id": "session-1",
                 "batch_id": request["batch_id"],
@@ -146,14 +150,20 @@ def _build_detector(
     include_lap_scores=False,
     tracking_diagnostics="none",
     tracking_diagnostics_payload=None,
+    timing_headers=None,
+    frame_count=3,
+    fps=2.0,
+    max_fps=15.0,
+    batch_size=2,
 ):
-    frames = [np.zeros((20, 40, 3), dtype=np.uint8) for _ in range(3)]
-    capture = FakeCapture(frames)
+    frames = [np.zeros((20, 40, 3), dtype=np.uint8) for _ in range(frame_count)]
+    capture = FakeCapture(frames, fps=fps)
     monkeypatch.setattr(remote_detector.cv2, "VideoCapture", lambda _path: capture)
     client = FakeVisionClient(
         transient_first_batch=transient_first_batch,
         include_lap_scores=include_lap_scores,
         tracking_diagnostics_payload=tracking_diagnostics_payload,
+        timing_headers=timing_headers,
     )
     batch_ids = iter((uuid.UUID(int=1), uuid.UUID(int=2), uuid.UUID(int=3)))
     detector = RemoteSwimmerDetector(
@@ -161,7 +171,8 @@ def _build_detector(
         auth_token="secret",
         lap_calibration_id=lap_calibration_id,
         tracking_diagnostics=tracking_diagnostics,
-        batch_size=2,
+        batch_size=batch_size,
+        max_fps=max_fps,
         max_retries=2,
         retry_backoff_seconds=0,
         client_factory=lambda **_kwargs: client,
@@ -209,6 +220,47 @@ def test_stream_sends_sequential_batches_and_normalizes_results(monkeypatch):
     assert capture.released
     assert client.closed
     assert client.deleted == ["http://vision.test/v1/tracking-sessions/session-1"]
+
+
+def test_stream_samples_high_fps_and_preserves_source_timestamps(monkeypatch):
+    detector, _capture, client = _build_detector(
+        monkeypatch,
+        frame_count=12,
+        fps=60.0,
+        max_fps=15.0,
+        batch_size=2,
+    )
+
+    results = list(detector.stream("video.mp4"))
+
+    assert client.session_payloads == [{"fps": 15.0}]
+    assert [frame["time"] for frame in results] == pytest.approx(
+        [0.0, 4 / 60, 8 / 60]
+    )
+    assert [
+        item["frame_index"]
+        for call in client.batch_calls
+        for item in json.loads(call["metadata"])["frames"]
+    ] == [0, 4, 8]
+
+
+def test_stream_logs_front_and_ai_batch_timings(monkeypatch, caplog):
+    detector, _capture, _client = _build_detector(
+        monkeypatch,
+        timing_headers={
+            "X-Swimtrack-Decode-Ms": "3.25",
+            "X-Swimtrack-Process-Ms": "12.5",
+            "X-Swimtrack-Total-Ms": "15.75",
+        },
+    )
+
+    caplog.set_level(logging.INFO, logger=remote_detector.__name__)
+    list(detector.stream("video.mp4"))
+
+    assert "vision_batch_timing" in caplog.text
+    assert "ai_decode_ms=3.2" in caplog.text
+    assert "ai_process_ms=12.5" in caplog.text
+    assert "ai_total_ms=15.8" in caplog.text
 
 
 def test_stream_enables_and_forwards_fixed_camera_lap_scores(monkeypatch):
@@ -332,6 +384,15 @@ def test_constructor_rejects_unknown_tracking_diagnostics_mode():
             base_url="http://vision.test",
             auth_token="secret",
             tracking_diagnostics="verbose",  # type: ignore[arg-type]
+        )
+
+
+def test_constructor_rejects_non_positive_sampling_fps():
+    with pytest.raises(ValueError, match="VISION_MAX_FPS debe ser mayor que cero"):
+        RemoteSwimmerDetector(
+            base_url="http://vision.test",
+            auth_token="secret",
+            max_fps=0,
         )
 
 

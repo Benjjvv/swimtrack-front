@@ -25,7 +25,8 @@ class Config:
         "VISION_LAP_CALIBRATION_ID", "fixed-camera-v1"
     )
     VISION_TRACKING_DIAGNOSTICS = os.getenv("VISION_TRACKING_DIAGNOSTICS", "none")
-    VISION_BATCH_SIZE = int(os.getenv("VISION_BATCH_SIZE", "8"))
+    VISION_BATCH_SIZE = int(os.getenv("VISION_BATCH_SIZE", "4"))
+    VISION_MAX_FPS = float(os.getenv("VISION_MAX_FPS", "15"))
     VISION_INFERENCE_SIZE = int(os.getenv("VISION_INFERENCE_SIZE", "640"))
     VISION_JPEG_QUALITY = int(os.getenv("VISION_JPEG_QUALITY", "85"))
     VISION_CONNECT_TIMEOUT = float(os.getenv("VISION_CONNECT_TIMEOUT", "5"))

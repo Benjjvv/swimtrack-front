@@ -13,7 +13,7 @@ import { drawDetections, clearCanvas } from './detection.js';
 
 // El video no debe alcanzar al stream SSE: esperamos esta ventaja antes de
 // iniciar y volvemos a pausar si la inferencia queda demasiado atrás.
-const INITIAL_BUFFER_SECONDS = 1;
+const INITIAL_BUFFER_SECONDS = 2;
 const PAUSE_BUFFER_SECONDS = 0.25;
 const RESUME_BUFFER_SECONDS = 0.75;
 

@@ -124,18 +124,23 @@ test('starts the SSE stream before playing and buffers detections before playbac
   playback._ingestEvent(`data: ${JSON.stringify(frame(1))}`);
   await flush();
 
+  assert.equal(video.playCalls, 0);
+
+  playback._ingestEvent(`data: ${JSON.stringify(frame(2))}`);
+  await flush();
+
   assert.equal(video.playCalls, 1);
   assert.equal(video.paused, false);
   assert.deepEqual(bufferingStates, [true, false]);
 
-  video.currentTime = 0.8;
+  video.currentTime = 1.8;
   video.emit('timeupdate');
 
   assert.equal(video.paused, true);
   assert.equal(video.pauseCalls, 1);
   assert.deepEqual(bufferingStates, [true, false, true]);
 
-  playback._ingestEvent(`data: ${JSON.stringify(frame(1.6))}`);
+  playback._ingestEvent(`data: ${JSON.stringify(frame(2.6))}`);
   await flush();
 
   assert.equal(video.playCalls, 2);

@@ -9,6 +9,7 @@ siendo el que consume el generador SSE del front.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import time
 import uuid
@@ -21,6 +22,7 @@ import httpx
 
 
 _RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+logger = logging.getLogger(__name__)
 
 
 class RemoteDetectorError(RuntimeError):
@@ -60,7 +62,8 @@ class RemoteSwimmerDetector:
         auth_token: str,
         lap_calibration_id: str | None = None,
         tracking_diagnostics: Literal["none", "counts", "boxes"] = "none",
-        batch_size: int = 8,
+        batch_size: int = 4,
+        max_fps: float = 15.0,
         inference_size: int = 640,
         jpeg_quality: int = 85,
         connect_timeout: float = 5.0,
@@ -79,6 +82,8 @@ class RemoteSwimmerDetector:
             raise ValueError("VISION_BASE_URL no puede estar vacío.")
         if batch_size < 1:
             raise ValueError("VISION_BATCH_SIZE debe ser al menos 1.")
+        if not math.isfinite(max_fps) or max_fps <= 0:
+            raise ValueError("VISION_MAX_FPS debe ser mayor que cero.")
         if inference_size < 1:
             raise ValueError("VISION_INFERENCE_SIZE debe ser al menos 1.")
         if not 1 <= jpeg_quality <= 100:
@@ -106,6 +111,7 @@ class RemoteSwimmerDetector:
         )
         self.tracking_diagnostics = tracking_diagnostics
         self.batch_size = batch_size
+        self.max_fps = max_fps
         self.inference_size = inference_size
         self.jpeg_quality = jpeg_quality
         self.max_retries = max_retries
@@ -132,6 +138,7 @@ class RemoteSwimmerDetector:
             lap_calibration_id=config.get("VISION_LAP_CALIBRATION_ID"),
             tracking_diagnostics=config.get("VISION_TRACKING_DIAGNOSTICS", "none"),
             batch_size=int(config["VISION_BATCH_SIZE"]),
+            max_fps=float(config["VISION_MAX_FPS"]),
             inference_size=int(config["VISION_INFERENCE_SIZE"]),
             jpeg_quality=int(config["VISION_JPEG_QUALITY"]),
             connect_timeout=float(config["VISION_CONNECT_TIMEOUT"]),
@@ -155,33 +162,45 @@ class RemoteSwimmerDetector:
         if not math.isfinite(fps) or fps <= 0:
             fps = self.fallback_fps
 
+        sample_stride = max(1, math.ceil(fps / self.max_fps))
+        tracking_fps = fps / sample_stride
+        logger.info(
+            "vision_stream_sampling source_fps=%.3f sampled_fps=%.3f stride=%d",
+            fps,
+            tracking_fps,
+            sample_stride,
+        )
+
         client: httpx.Client | None = None
         session_id: str | None = None
         sequence = 0
         pending: list[_EncodedFrame] = []
-        frame_index = 0
+        source_frame_count = 0
 
         try:
             client = self._client_factory(
                 headers={"X-Swimtrack-Auth": self.auth_token},
                 timeout=self._timeout,
             )
-            session_id = self._create_session(client, fps)
+            session_id = self._create_session(client, tracking_fps)
 
             while True:
                 ok, frame = capture.read()
                 if not ok:
                     break
 
-                pending.append(self._encode_frame(frame, frame_index, fps))
-                frame_index += 1
-
-                if len(pending) == self.batch_size:
-                    results, sequence = self._send_batch(
-                        client, session_id, sequence, pending
+                if source_frame_count % sample_stride == 0:
+                    pending.append(
+                        self._encode_frame(frame, source_frame_count, fps)
                     )
-                    yield from results
-                    pending = []
+
+                    if len(pending) == self.batch_size:
+                        results, sequence = self._send_batch(
+                            client, session_id, sequence, pending
+                        )
+                        yield from results
+                        pending = []
+                source_frame_count += 1
 
             if pending:
                 results, sequence = self._send_batch(
@@ -189,7 +208,7 @@ class RemoteSwimmerDetector:
                 )
                 yield from results
 
-            if frame_index == 0:
+            if source_frame_count == 0:
                 raise RemoteDetectorError(
                     "El video subido no contiene frames decodificables."
                 )
@@ -254,6 +273,7 @@ class RemoteSwimmerDetector:
         sequence: int,
         frames: Sequence[_EncodedFrame],
     ) -> tuple[list[dict[str, Any]], int]:
+        batch_started = time.perf_counter()
         batch_id = str(self._uuid_factory())
         metadata = {
             "batch_id": batch_id,
@@ -302,6 +322,13 @@ class RemoteSwimmerDetector:
             raise RemoteDetectorError(f"El batch {batch_id} no obtuvo respuesta.")
 
         self._ensure_success(response, expected_status=200)
+        self._log_batch_timing(
+            response=response,
+            sequence=sequence,
+            frames=frames,
+            attempts=attempt + 1,
+            roundtrip_ms=(time.perf_counter() - batch_started) * 1000.0,
+        )
         payload = self._response_json(response)
         results = self._validate_batch_response(
             payload,
@@ -311,6 +338,46 @@ class RemoteSwimmerDetector:
             frames=frames,
         )
         return results, sequence + 1
+
+    @staticmethod
+    def _response_timing(response: httpx.Response, header: str) -> float | None:
+        value = response.headers.get(header)
+        if value is None:
+            return None
+        try:
+            timing = float(value)
+        except (TypeError, ValueError):
+            return None
+        if not math.isfinite(timing) or timing < 0:
+            return None
+        return timing
+
+    def _log_batch_timing(
+        self,
+        *,
+        response: httpx.Response,
+        sequence: int,
+        frames: Sequence[_EncodedFrame],
+        attempts: int,
+        roundtrip_ms: float,
+    ) -> None:
+        def metric(header: str) -> str:
+            value = self._response_timing(response, header)
+            return "unavailable" if value is None else f"{value:.1f}"
+
+        logger.info(
+            "vision_batch_timing sequence=%d frames=%d frame_range=%d-%d attempts=%d "
+            "roundtrip_ms=%.1f ai_decode_ms=%s ai_process_ms=%s ai_total_ms=%s",
+            sequence,
+            len(frames),
+            frames[0].frame_index,
+            frames[-1].frame_index,
+            attempts,
+            roundtrip_ms,
+            metric("X-Swimtrack-Decode-Ms"),
+            metric("X-Swimtrack-Process-Ms"),
+            metric("X-Swimtrack-Total-Ms"),
+        )
 
     def _validate_batch_response(
         self,
