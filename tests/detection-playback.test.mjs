@@ -282,6 +282,74 @@ test('keeps rendering after a loop when video frame callbacks do not resume', as
   await started;
 });
 
+test('recovers an implicit loop before seeked while the prior frame callback still looks healthy', async () => {
+  const video = new FrameCallbackVideo();
+  const canvas = fakeCanvas();
+  const playback = new ControlledPlayback(video, canvas);
+
+  const started = playback.start('blob:video', {}, '/api/detect');
+  await playback.streamStarted.promise;
+  playback._ingestEvent(`data: ${JSON.stringify(emptyFrame(0))}`);
+  playback._ingestEvent(`data: ${JSON.stringify(frame(0.1))}`);
+  playback._ingestEvent(`data: ${JSON.stringify(frame(2))}`);
+  await flush();
+
+  video.present(1.4);
+  const strokesAtEndOfCycle = canvas.context.strokeCalls;
+
+  // El loop nativo puede retroceder sin que seeked llegue antes del siguiente
+  // timeupdate. Tampoco llega un nuevo callback del compositor en este caso.
+  video.currentTime = 0.1;
+  video.emit('timeupdate');
+
+  assert.equal(canvas.context.strokeCalls, strokesAtEndOfCycle + 1);
+  assert.equal(playback._awaitingVideoFrameAfterSeek, true);
+
+  // Mientras esperamos el callback nuevo, el fallback debe seguir dibujando.
+  video.currentTime = 0.2;
+  video.emit('timeupdate');
+  assert.equal(canvas.context.strokeCalls, strokesAtEndOfCycle + 2);
+
+  playback.stop();
+  playback.streamGate.resolve();
+  await started;
+});
+
+test('ignores a stale video frame callback until it belongs to the repeated cycle', async () => {
+  const video = new FrameCallbackVideo();
+  const canvas = fakeCanvas();
+  const playback = new ControlledPlayback(video, canvas);
+
+  const started = playback.start('blob:video', {}, '/api/detect');
+  await playback.streamStarted.promise;
+  playback._ingestEvent(`data: ${JSON.stringify(emptyFrame(0))}`);
+  playback._ingestEvent(`data: ${JSON.stringify(frame(0.1))}`);
+  playback._ingestEvent(`data: ${JSON.stringify(frame(2))}`);
+  await flush();
+
+  video.present(1.4);
+  video.currentTime = 0.1;
+  video.emit('timeupdate');
+  const strokesAtLoopStart = canvas.context.strokeCalls;
+
+  // Simula un callback pendiente del ciclo anterior: no puede reemplazar el
+  // frame recién renderizado ni sacar al reproductor del modo de recuperación.
+  video.present(1.4);
+  assert.equal(playback._presentedVideoTime, 0.1);
+  assert.equal(playback._awaitingVideoFrameAfterSeek, true);
+  assert.equal(canvas.context.strokeCalls, strokesAtLoopStart);
+
+  video.currentTime = 0.15;
+  video.present(0.15);
+  assert.equal(playback._presentedVideoTime, 0.15);
+  assert.equal(playback._awaitingVideoFrameAfterSeek, false);
+  assert.equal(canvas.context.strokeCalls, strokesAtLoopStart + 1);
+
+  playback.stop();
+  playback.streamGate.resolve();
+  await started;
+});
+
 test('does not render from timeupdate while video frame callbacks are healthy', async () => {
   const video = new FrameCallbackVideo();
   const canvas = fakeCanvas();

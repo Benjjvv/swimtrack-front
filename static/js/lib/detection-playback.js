@@ -32,6 +32,14 @@ const INTERPOLATION_MAX_GAP_SECONDS = 0.5;
 // overlay cuando el callback preciso del compositor no llega por un tiempo
 // anormal; de otro modo ambos relojes competirían y harían parpadear las cajas.
 const VIDEO_FRAME_CALLBACK_STALL_SECONDS = 0.35;
+// El loop nativo no garantiza el orden de seeked, timeupdate y
+// requestVideoFrameCallback. Una diferencia grande evita confundir el reloj
+// levemente atrasado de timeupdate con el reinicio real del clip.
+const LOOP_REWIND_MIN_SECONDS = 0.5;
+// Después de un seek/loop puede llegar un callback pendiente del ciclo previo.
+// Sólo volvemos al reloj preciso cuando mediaTime es coherente con el nuevo
+// tiempo pedido o presentado por el elemento.
+const VIDEO_FRAME_CALLBACK_SYNC_TOLERANCE_SECONDS = 0.25;
 // Un frame vacío de la IA no debe hacer desaparecer las cajas de inmediato.
 // Mantenemos la última detección reciente, pero acotamos su antigüedad para no
 // dejar una posición congelada durante una oclusión prolongada.
@@ -123,6 +131,7 @@ export class DetectionPlayback {
     this._videoFrameRequestId = null;
     this._lastVideoFrameCallbackAt = null;
     this._awaitingVideoFrameAfterSeek = false;
+    this._timelineRecoveryTarget = null;
   }
 
   /**
@@ -146,6 +155,7 @@ export class DetectionPlayback {
     this._presentedVideoTime = null;
     this._lastVideoFrameCallbackAt = this._clock();
     this._awaitingVideoFrameAfterSeek = false;
+    this._timelineRecoveryTarget = null;
 
     this.video.srcObject = null; // por si venía de la cámara
     this.video.src = videoUrl;
@@ -156,12 +166,20 @@ export class DetectionPlayback {
     // ante seek/loop o cuando ese API deja de entregar callbacks.
     this._usesVideoFrameCallback = typeof this.video.requestVideoFrameCallback === 'function';
     this._onTimeUpdate = () => {
+      // Algunos navegadores reinician currentTime por loop antes de emitir
+      // seeked o de entregar el primer callback del compositor del nuevo ciclo.
+      // No dependemos de esos eventos: el propio retroceso del reloj habilita
+      // el fallback y redibuja de inmediato las detecciones ya almacenadas.
+      const loopRewound = this._hasTimeRewound(this.video.currentTime);
+      if (loopRewound) {
+        this._beginTimelineRecovery(this.video.currentTime);
+      }
       // Nunca dibujamos por ambos relojes durante reproducción normal: currentTime
       // puede adelantar unos milisegundos a mediaTime y alternaría cajas/estelas.
       // Después de un loop buscamos primero el próximo frame presentado; si no
       // aparece, `timeupdate` mantiene vivo el overlay como recuperación.
       if (!this._usesVideoFrameCallback || this.video.paused
-        || this._awaitingVideoFrameAfterSeek || this._videoFrameCallbackIsStalled()) {
+        || loopRewound || this._awaitingVideoFrameAfterSeek || this._videoFrameCallbackIsStalled()) {
         this._renderCurrent();
       }
       this._pauseIfBufferRunsDry();
@@ -170,7 +188,7 @@ export class DetectionPlayback {
     this._onSeeked = () => {
       // Un seek puede no presentar un frame nuevo de inmediato; reflejamos la
       // posición pedida y dejamos que el siguiente callback la afine.
-      this._awaitingVideoFrameAfterSeek = this._usesVideoFrameCallback && !this.video.paused;
+      this._beginTimelineRecovery(this.video.currentTime);
       this._renderCurrent();
       this._pauseIfBufferRunsDry();
     };
@@ -480,6 +498,24 @@ export class DetectionPlayback {
     this._renderAt(this.video.currentTime);
   }
 
+  _hasTimeRewound(time) {
+    return this._lastRenderedVideoTime !== null
+      && Number.isFinite(time)
+      && time + LOOP_REWIND_MIN_SECONDS < this._lastRenderedVideoTime;
+  }
+
+  _beginTimelineRecovery(time) {
+    this._timelineRecoveryTarget = Number.isFinite(time) ? time : null;
+    this._awaitingVideoFrameAfterSeek = this._usesVideoFrameCallback && !this.video.paused;
+  }
+
+  _callbackMatchesCurrentTimeline(mediaTime) {
+    if (this._timelineRecoveryTarget === null) return true;
+    const references = [this.video.currentTime, this._timelineRecoveryTarget]
+      .filter((time) => Number.isFinite(time));
+    return references.some((time) => Math.abs(mediaTime - time) <= VIDEO_FRAME_CALLBACK_SYNC_TOLERANCE_SECONDS);
+  }
+
   _videoFrameCallbackIsStalled() {
     if (!this._usesVideoFrameCallback || this._lastVideoFrameCallbackAt === null) return false;
     return this._clock() - this._lastVideoFrameCallbackAt >= VIDEO_FRAME_CALLBACK_STALL_SECONDS;
@@ -504,11 +540,18 @@ export class DetectionPlayback {
     this._videoFrameRequestId = this.video.requestVideoFrameCallback((_now, metadata) => {
       this._videoFrameRequestId = null;
       if (!this._isActive(runId)) return;
-      this._lastVideoFrameCallbackAt = this._clock();
-      this._awaitingVideoFrameAfterSeek = false;
       const mediaTime = metadata && Number.isFinite(metadata.mediaTime)
         ? metadata.mediaTime
         : this.video.currentTime;
+      // Un callback que pertenece al ciclo anterior no debe volver a dibujar
+      // una caja al final del video ni desactivar el fallback del loop nuevo.
+      if (this._awaitingVideoFrameAfterSeek && !this._callbackMatchesCurrentTimeline(mediaTime)) {
+        this._requestVideoFrame(runId);
+        return;
+      }
+      this._lastVideoFrameCallbackAt = this._clock();
+      this._awaitingVideoFrameAfterSeek = false;
+      this._timelineRecoveryTarget = null;
       this._renderAt(mediaTime);
       this._pauseIfBufferRunsDry();
       // Hay que registrar el siguiente callback usando el ID nuevo para que
@@ -641,6 +684,7 @@ export class DetectionPlayback {
     this._usesVideoFrameCallback = false;
     this._lastVideoFrameCallbackAt = null;
     this._awaitingVideoFrameAfterSeek = false;
+    this._timelineRecoveryTarget = null;
     if (this._resizeObs) {
       this._resizeObs.disconnect();
       this._resizeObs = null;
