@@ -76,7 +76,12 @@ En la VM temporal del proyecto, `swimtrack-ai` se ejecuta nativamente con `uv` e
 uv run --with-requirements requirements.txt --with pytest python -m pytest -q
 uv run --with ruff ruff check .
 node tests/detection-playback.test.mjs
+npm install
+npx playwright install chromium
+npm run test:e2e
 ```
+
+Los E2E de navegador viven en `tests/e2e/`: comparten fixtures, page objects y mocks de SSE para que nuevos flujos no repliquen navegación ni contratos de detección. `npm run test:e2e:loop` ejecuta sólo la regresión de overlay y loop. La suite levanta Flask localmente y simula el SSE para probar la reproducción de forma determinista; conserva trace, video y screenshot si falla. Para ejecutar la misma UI servida por Apache, sin reemplazar sus rutas ni assets, indica `SWIMTRACK_E2E_BASE_URL=http://10.0.218.111/swimtrack/ npm run test:e2e`.
 
 ## API
 
