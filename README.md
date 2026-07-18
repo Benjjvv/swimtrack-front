@@ -48,7 +48,9 @@ Abrir <http://localhost:7001>.
 | `VISION_AUTH_TOKEN` | Token compartido con `swimtrack-ai`. |
 | `VISION_LAP_CALIBRATION_ID` | Calibración fija solicitada al crear la sesión; default `fixed-camera-v1`. |
 | `VISION_TRACKING_DIAGNOSTICS` | Instrumentación opt-in por frame: `none` (default), `counts` o `boxes`. |
+| `VISION_TRANSPORT` | `frames` (default) conserva el envío JPEG idempotente; `video` retransmite el archivo original una vez a `/v1/tracking-sessions/{session_id}/video` y recibe NDJSON. Actívalo sólo junto con la versión compatible de `swimtrack-ai`. |
 | `VISION_BATCH_SIZE` | Cantidad de frames JPEG enviados por request; default `4`. |
+| `VISION_PREPARED_BATCH_QUEUE_SIZE` | Batches JPEG preparados localmente mientras el request anterior espera la GPU; default `2`, siempre con un único request ordenado en vuelo. |
 | `VISION_MAX_FPS` | Máximo de FPS que se analizan desde un video subido; default `15`, con timestamps originales. |
 | `VISION_INFERENCE_SIZE` | Resolución cuadrada enviada al modelo; default `640`. |
 | `VISION_JPEG_QUALITY` | Calidad de compresión de los frames; default `85`. |
@@ -63,6 +65,8 @@ Abrir <http://localhost:7001>.
 `.env` no se sube al repo; `.env.example` sí.
 
 `VISION_AUTH_TOKEN` debe tener exactamente el mismo valor que `SWIMTRACK_AUTH_TOKEN` en `swimtrack-ai`.
+
+El Front registra telemetría estructurada sin nombres de archivo, paths, tokens ni contenido: `vision_upload_timing`, `vision_prepare_batch_timing`, `vision_prepare_timing`, `vision_batch_timing`, `vision_video_metadata`, `vision_video_upload_timing` y `vision_sse_timing`. Estas métricas separan guardado del upload, decode/muestreo/resize/JPEG, espera de la cola, request hacia la GPU y emisión SSE.
 
 En la VM temporal del proyecto, `swimtrack-ai` se ejecuta nativamente con `uv` en `10.0.218.101:7001`, dentro del rango ya abierto. El token protege las rutas privadas, pero UFW no restringe el acceso por origen; no reutilices esta configuración fuera de esta red privada temporal. Consulta [INTEGRACION_IA.md](INTEGRACION_IA.md#conexión-directa-privada) para la configuración y el smoke test.
 
@@ -91,7 +95,7 @@ Respuesta: `{ "ok": true, "mock": <bool>, "analysis": "<texto>" }`.
 ```
 app.py                 Flask + páginas + endpoints /api/detect y /api/ai/analyze
 config.py              Config dev/prod desde .env
-remote_detector.py     Decode, batching HTTP, retries y cleanup de sesiones IA
+remote_detector.py     Transporte JPEG o video original, retries y cleanup de sesiones IA
 templates/             base.html + 1 plantilla por página
 static/css/theme.css   Tema oscuro sobre Bootstrap
 static/js/

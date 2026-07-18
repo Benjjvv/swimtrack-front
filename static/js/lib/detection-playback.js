@@ -2,8 +2,10 @@
 //
 // Sube el video a POST /api/detect y consume el stream SSE (un evento por frame,
 // contrato: {time, width, height, boxes, count}). Cada frame se acumula en
-// this.frames y el DIBUJO se sincroniza con el <video> por el evento timeupdate
-// (y por resize): se muestra el frame cuyo `time` corresponde a video.currentTime.
+// this.frames y el DIBUJO se sincroniza con el frame efectivamente presentado por
+// el <video> mediante requestVideoFrameCallback. En navegadores que no exponen
+// ese API usamos timeupdate como fallback. Se muestra el frame cuyo `time`
+// corresponde al timestamp de media del video, no al instante en que llega SSE.
 // Reutiliza la capa de dibujo existente (drawDetections/clearCanvas).
 //
 // EventSource no sirve (es solo GET), así que consumimos el SSE con fetch() +
@@ -19,8 +21,13 @@ import {
 // El video no debe alcanzar al stream SSE: esperamos esta ventaja antes de
 // iniciar y volvemos a pausar si la inferencia queda demasiado atrás.
 const INITIAL_BUFFER_SECONDS = 2;
-const PAUSE_BUFFER_SECONDS = 0.25;
-const RESUME_BUFFER_SECONDS = 0.75;
+const MIN_PAUSE_BUFFER_SECONDS = 0.15;
+const MAX_PAUSE_BUFFER_SECONDS = 0.5;
+const MIN_RESUME_BUFFER_SECONDS = 0.75;
+const MAX_RESUME_BUFFER_SECONDS = 3;
+const DEFAULT_ARRIVAL_GAP_SECONDS = 0.15;
+const ARRIVAL_GAP_SAMPLE_LIMIT = 24;
+const INTERPOLATION_MAX_GAP_SECONDS = 0.5;
 // Un frame vacío de la IA no debe hacer desaparecer las cajas de inmediato.
 // Mantenemos la última detección reciente, pero acotamos su antigüedad para no
 // dejar una posición congelada durante una oclusión prolongada.
@@ -50,21 +57,36 @@ function toDetection(box, scale, offX, offY) {
   };
 }
 
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function percentile(values, q) {
+  if (!values.length) return DEFAULT_ARRIVAL_GAP_SECONDS;
+  const sorted = [...values].sort((a, b) => a - b);
+  // Nearest-rank conserva el hueco entre batches incluso si un batch entrega
+  // varios eventos SSE en el mismo tick del navegador.
+  return sorted[Math.min(sorted.length - 1, Math.ceil(sorted.length * q) - 1)];
+}
+
 export class DetectionPlayback {
   /**
    * @param {HTMLVideoElement} video
    * @param {HTMLCanvasElement} canvas
    * @param {(count:number)=>void} [onCount] callback con el count del frame.
    * @param {(isBuffering:boolean)=>void} [onBufferingChange] actualiza la UI de espera.
+   * @param {(telemetry:{reason:string,bufferAhead:number,pauseThreshold:number,resumeThreshold:number,initialThreshold:number,rebufferCount:number,arrivalGapP90:number,streamDone:boolean})=>void} [onBufferTelemetry] actualiza el detalle de espera.
    */
-  constructor(video, canvas, onCount, onBufferingChange) {
+  constructor(video, canvas, onCount, onBufferingChange, onBufferTelemetry) {
     this.video = video;
     this.canvas = canvas;
     this.onCount = onCount || (() => {});
     this.onBufferingChange = onBufferingChange || (() => {});
+    this.onBufferTelemetry = onBufferTelemetry || (() => {});
     /** @type {Array<{time:number,width:number,height:number,boxes:any[],count:number}>} */
     this.frames = [];
     this._onTimeUpdate = null;
+    this._onSeeked = null;
     this._resizeObs = null;
     /** @type {AbortController|null} para cancelar el stream si se frena. */
     this._abort = null;
@@ -75,11 +97,26 @@ export class DetectionPlayback {
     this._streamDone = false;
     this._playStarted = false;
     this._buffering = false;
+    this._bufferingReason = null;
+    this._bufferingStartedAt = null;
+    this._rebufferCount = 0;
+    this._lastRebufferDuration = 0;
+    this._arrivalGaps = [];
+    this._lastArrivalAt = null;
+    this._clock = () => {
+      if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+        return performance.now() / 1000;
+      }
+      return Date.now() / 1000;
+    };
     this._initialBufferWaiter = null;
     this._resumePromise = null;
     this._overlay = createDetectionOverlayState();
     this._onDebugSettingsChange = null;
     this._lastRenderedVideoTime = null;
+    this._presentedVideoTime = null;
+    this._usesVideoFrameCallback = false;
+    this._videoFrameRequestId = null;
   }
 
   /**
@@ -95,22 +132,36 @@ export class DetectionPlayback {
     this._maxCount = 0; // contador arranca de cero con cada video nuevo
     this._streamDone = false;
     this._playStarted = false;
-    this._setBuffering(true);
+    this._resetBufferTelemetry();
+    this._setBuffering(true, 'initial');
     this._resumePromise = null;
     resetDetectionOverlayState(this._overlay);
     this._lastRenderedVideoTime = null;
+    this._presentedVideoTime = null;
 
     this.video.srcObject = null; // por si venía de la cámara
     this.video.src = videoUrl;
     this.video.loop = true;      // el clip de prueba es corto: repetir es cómodo
 
-    // Redibujar el frame actual en cada timeupdate Y al cambiar de tamaño
-    // (resize de ventana, colapso de sidebar), no solo mientras reproduce. (F4)
+    // requestVideoFrameCallback se ejecuta para cada frame enviado al compositor
+    // y entrega su mediaTime exacto. timeupdate se conserva para seek/pausa y
+    // como fallback para navegadores sin ese API.
+    this._usesVideoFrameCallback = typeof this.video.requestVideoFrameCallback === 'function';
     this._onTimeUpdate = () => {
+      if (!this._usesVideoFrameCallback || this.video.paused) {
+        this._renderCurrent();
+        this._pauseIfBufferRunsDry();
+      }
+    };
+    this.video.addEventListener('timeupdate', this._onTimeUpdate);
+    this._onSeeked = () => {
+      // Un seek puede no presentar un frame nuevo de inmediato; reflejamos la
+      // posición pedida y dejamos que el siguiente callback la afine.
       this._renderCurrent();
       this._pauseIfBufferRunsDry();
     };
-    this.video.addEventListener('timeupdate', this._onTimeUpdate);
+    this.video.addEventListener('seeked', this._onSeeked);
+    if (this._usesVideoFrameCallback) this._requestVideoFrame(runId);
     this._resizeObs = new ResizeObserver(() => {
       // Las estelas se almacenan en coordenadas del canvas visible. Al cambiar
       // el tamaño, reiniciarlas evita mezclar posiciones de dos escalas.
@@ -143,7 +194,7 @@ export class DetectionPlayback {
       }
 
       this._playStarted = true;
-      this._setBuffering(false);
+      this._setBuffering(false, 'playing');
       this._renderCurrent();
 
       await stream;
@@ -154,7 +205,7 @@ export class DetectionPlayback {
         if (!this._streamDone && this._abort) this._abort.abort();
         this._streamDone = true;
         this._abort = null;
-        this._setBuffering(false);
+        this._setBuffering(false, 'complete');
       }
     }
   }
@@ -217,10 +268,14 @@ export class DetectionPlayback {
       // keepalive/comentario u otro evento no-JSON: lo ignoramos.
       return;
     }
+    this._recordArrival();
     this.frames.push(frame); // {time,width,height,boxes,count}
     this._settleInitialBuffer();
-    this._renderCurrent();
+    if (!this._usesVideoFrameCallback || !this._playStarted || this.video.paused) {
+      this._renderCurrent();
+    }
     this._resumeIfBuffered(runId);
+    this._emitBufferTelemetry(this._buffering ? this._bufferingReason : 'streaming');
   }
 
   /** Espera la ventaja inicial o el final de un video más corto que el margen. */
@@ -244,7 +299,7 @@ export class DetectionPlayback {
       waiter.reject(new Error('El servidor de detección no emitió frames.'));
       return;
     }
-    if (!this.frames.length || (!this._streamDone && this._bufferAhead() < INITIAL_BUFFER_SECONDS)) {
+    if (!this.frames.length || (!this._streamDone && this._bufferAhead() < this._initialBufferSeconds())) {
       return;
     }
     this._initialBufferWaiter = null;
@@ -255,8 +310,11 @@ export class DetectionPlayback {
     if (!this._isActive(runId)) return;
     this._streamDone = true;
     this._settleInitialBuffer();
-    this._renderCurrent();
+    if (!this._usesVideoFrameCallback || !this._playStarted || this.video.paused) {
+      this._renderCurrent();
+    }
     this._resumeIfBuffered(runId);
+    this._emitBufferTelemetry('complete');
   }
 
   _failInitialBuffer(runId, error) {
@@ -278,19 +336,103 @@ export class DetectionPlayback {
 
   _bufferAhead() {
     const latest = this._latestFrameTime();
-    return latest === null ? Number.NEGATIVE_INFINITY : latest - this.video.currentTime;
+    const current = this._presentedVideoTime === null ? this.video.currentTime : this._presentedVideoTime;
+    return latest === null ? Number.NEGATIVE_INFINITY : latest - current;
   }
 
-  _setBuffering(isBuffering) {
-    if (this._buffering === isBuffering) return;
+  _resetBufferTelemetry() {
+    this._bufferingReason = null;
+    this._bufferingStartedAt = null;
+    this._rebufferCount = 0;
+    this._lastRebufferDuration = 0;
+    this._arrivalGaps = [];
+    this._lastArrivalAt = null;
+  }
+
+  _recordArrival() {
+    const now = this._clock();
+    if (this._lastArrivalAt !== null) {
+      const gap = now - this._lastArrivalAt;
+      // Pausas muy largas suelen ser el navegador suspendido en background; no
+      // dejamos que una de ellas fuerce un objetivo de buffer exagerado.
+      if (Number.isFinite(gap) && gap >= 0 && gap <= MAX_RESUME_BUFFER_SECONDS) {
+        this._arrivalGaps.push(gap);
+        if (this._arrivalGaps.length > ARRIVAL_GAP_SAMPLE_LIMIT) this._arrivalGaps.shift();
+      }
+    }
+    this._lastArrivalAt = now;
+  }
+
+  _arrivalGapP90() {
+    return percentile(this._arrivalGaps, 0.9);
+  }
+
+  _resumeBufferSeconds() {
+    // Dos intervalos de llegada más un margen absorben la mayoría de los bursts
+    // SSE. Si el último rebuffer duró más, su duración también eleva el próximo
+    // objetivo para evitar una secuencia de pausas de ~1 s.
+    const protection = Math.max(
+      this._arrivalGapP90() * 2,
+      this._lastRebufferDuration * 1.5,
+    );
+    return clamp(0.25 + protection, MIN_RESUME_BUFFER_SECONDS, MAX_RESUME_BUFFER_SECONDS);
+  }
+
+  _pauseBufferSeconds() {
+    // Pausar antes de agotar el margen deja tiempo para que llegue el próximo
+    // batch, sin hacer que los clips normalmente fluidos se congelen demasiado pronto.
+    return clamp(this._resumeBufferSeconds() / 3, MIN_PAUSE_BUFFER_SECONDS, MAX_PAUSE_BUFFER_SECONDS);
+  }
+
+  _initialBufferSeconds() {
+    return Math.max(INITIAL_BUFFER_SECONDS, this._resumeBufferSeconds());
+  }
+
+  _bufferTelemetry(reason) {
+    const ahead = this._bufferAhead();
+    return {
+      reason: reason || this._bufferingReason || (this._streamDone ? 'complete' : 'streaming'),
+      bufferAhead: Number.isFinite(ahead) ? Math.max(0, ahead) : 0,
+      pauseThreshold: this._pauseBufferSeconds(),
+      resumeThreshold: this._resumeBufferSeconds(),
+      initialThreshold: this._initialBufferSeconds(),
+      rebufferCount: this._rebufferCount,
+      arrivalGapP90: this._arrivalGapP90(),
+      streamDone: this._streamDone,
+    };
+  }
+
+  _emitBufferTelemetry(reason) {
+    this.onBufferTelemetry(this._bufferTelemetry(reason));
+  }
+
+  _setBuffering(isBuffering, reason = isBuffering ? 'initial' : 'playing') {
+    if (this._buffering === isBuffering) {
+      this._emitBufferTelemetry(reason);
+      return;
+    }
+    const now = this._clock();
+    if (isBuffering) {
+      this._bufferingReason = reason;
+      this._bufferingStartedAt = now;
+      if (reason === 'rebuffer') this._rebufferCount += 1;
+    } else if (this._bufferingReason === 'rebuffer' && this._bufferingStartedAt !== null) {
+      this._lastRebufferDuration = Math.max(0, now - this._bufferingStartedAt);
+      this._bufferingReason = null;
+      this._bufferingStartedAt = null;
+    } else {
+      this._bufferingReason = null;
+      this._bufferingStartedAt = null;
+    }
     this._buffering = isBuffering;
     this.onBufferingChange(isBuffering);
+    this._emitBufferTelemetry(reason);
   }
 
   _pauseIfBufferRunsDry() {
     if (!this._playStarted || this._streamDone || this._buffering) return;
-    if (this._bufferAhead() >= PAUSE_BUFFER_SECONDS) return;
-    this._setBuffering(true);
+    if (this._bufferAhead() >= this._pauseBufferSeconds()) return;
+    this._setBuffering(true, 'rebuffer');
     this.video.pause();
   }
 
@@ -298,18 +440,21 @@ export class DetectionPlayback {
     if (!this._isActive(runId) || !this._playStarted || !this._buffering || this._resumePromise) {
       return;
     }
-    if (!this._streamDone && this._bufferAhead() < RESUME_BUFFER_SECONDS) return;
+    if (!this._streamDone && this._bufferAhead() < this._resumeBufferSeconds()) {
+      this._emitBufferTelemetry('rebuffer');
+      return;
+    }
 
     this._resumePromise = this.video.play()
       .then(() => {
         if (!this._isActive(runId)) return;
-        this._setBuffering(false);
+        this._setBuffering(false, 'playing');
         this._renderCurrent();
       })
       .catch(() => {
         // El video está muted; un rechazo es excepcional. Conservamos el estado
         // pausado para no avanzar sin detecciones mientras el usuario reintenta.
-        if (this._isActive(runId)) this._setBuffering(true);
+        if (this._isActive(runId)) this._setBuffering(true, 'rebuffer');
       })
       .finally(() => {
         if (this._isActive(runId)) this._resumePromise = null;
@@ -318,15 +463,37 @@ export class DetectionPlayback {
 
   /** Dibuja el frame que corresponde al video.currentTime actual. */
   _renderCurrent() {
-    const currentTime = this.video.currentTime;
+    this._renderAt(this.video.currentTime);
+  }
+
+  /** Dibuja el frame que corresponde a un timestamp de media presentado. */
+  _renderAt(time) {
+    const currentTime = Number.isFinite(time) ? time : this.video.currentTime;
     if (this._lastRenderedVideoTime !== null && currentTime < this._lastRenderedVideoTime) {
       // Un seek o el loop del video no forman parte de la trayectoria física.
       resetDetectionOverlayState(this._overlay);
     }
     this._lastRenderedVideoTime = currentTime;
+    this._presentedVideoTime = currentTime;
     const frame = this._frameAt(currentTime);
     if (frame) this._render(frame);
     else clearCanvas(this.canvas);
+  }
+
+  _requestVideoFrame(runId) {
+    if (!this._usesVideoFrameCallback || !this._isActive(runId)) return;
+    this._videoFrameRequestId = this.video.requestVideoFrameCallback((_now, metadata) => {
+      this._videoFrameRequestId = null;
+      if (!this._isActive(runId)) return;
+      const mediaTime = metadata && Number.isFinite(metadata.mediaTime)
+        ? metadata.mediaTime
+        : this.video.currentTime;
+      this._renderAt(mediaTime);
+      this._pauseIfBufferRunsDry();
+      // Hay que registrar el siguiente callback usando el ID nuevo para que
+      // stop() pueda cancelarlo correctamente, tal como exige el API.
+      this._requestVideoFrame(runId);
+    });
   }
 
   /** Mapea las cajas al recorte de object-fit: cover del <video> y las dibuja. */
@@ -361,6 +528,46 @@ export class DetectionPlayback {
     return null;
   }
 
+  _nextDetectionAfter(t) {
+    for (const frame of this.frames) {
+      if (frame.time <= t) continue;
+      if (Array.isArray(frame.boxes) && frame.boxes.length > 0) return frame;
+    }
+    return null;
+  }
+
+  _interpolateFrame(previous, next, t) {
+    if (!next || !Array.isArray(previous.boxes) || !Array.isArray(next.boxes)) return previous;
+    const span = next.time - previous.time;
+    if (!Number.isFinite(span) || span <= 0 || span > INTERPOLATION_MAX_GAP_SECONDS) return previous;
+
+    const nextById = new Map();
+    for (const box of next.boxes) {
+      if (box && box.id !== undefined && box.id !== null) nextById.set(String(box.id), box);
+    }
+    const factor = clamp((t - previous.time) / span, 0, 1);
+    let changed = false;
+    const boxes = previous.boxes.map((box) => {
+      if (!box || box.id === undefined || box.id === null) return box;
+      const target = nextById.get(String(box.id));
+      if (!target) return box;
+      const fields = ['x1', 'y1', 'x2', 'y2', 'conf'];
+      if (!fields.every((field) => Number.isFinite(box[field]) && Number.isFinite(target[field]))) {
+        return box;
+      }
+      changed = true;
+      return {
+        ...box,
+        x1: box.x1 + (target.x1 - box.x1) * factor,
+        y1: box.y1 + (target.y1 - box.y1) * factor,
+        x2: box.x2 + (target.x2 - box.x2) * factor,
+        y2: box.y2 + (target.y2 - box.y2) * factor,
+        conf: box.conf + (target.conf - box.conf) * factor,
+      };
+    });
+    return changed ? { ...previous, time: t, boxes } : previous;
+  }
+
   /** Frame sincronizado, conservando cajas recientes ante un vacío breve de detección. */
   _frameAt(t) {
     let match = null;
@@ -369,12 +576,13 @@ export class DetectionPlayback {
       else break;
     }
     if (match && Array.isArray(match.boxes) && match.boxes.length > 0) {
-      return t - match.time <= DETECTION_PERSISTENCE_SECONDS ? match : null;
+      if (t - match.time > DETECTION_PERSISTENCE_SECONDS) return null;
+      return this._interpolateFrame(match, this._nextDetectionAfter(t), t);
     }
 
     const lastDetection = this._lastDetectionAtOrBefore(t);
     if (lastDetection && t - lastDetection.time <= DETECTION_PERSISTENCE_SECONDS) {
-      return lastDetection;
+      return this._interpolateFrame(lastDetection, this._nextDetectionAfter(t), t);
     }
     return match;
   }
@@ -390,7 +598,8 @@ export class DetectionPlayback {
     this._streamDone = false;
     this._playStarted = false;
     this._lastRenderedVideoTime = null;
-    this._setBuffering(false);
+    this._presentedVideoTime = null;
+    this._setBuffering(false, 'stopped');
     this._resumePromise = null;
     if (this._abort) {
       this._abort.abort();
@@ -400,6 +609,15 @@ export class DetectionPlayback {
       this.video.removeEventListener('timeupdate', this._onTimeUpdate);
       this._onTimeUpdate = null;
     }
+    if (this._onSeeked) {
+      this.video.removeEventListener('seeked', this._onSeeked);
+      this._onSeeked = null;
+    }
+    if (this._videoFrameRequestId !== null && typeof this.video.cancelVideoFrameCallback === 'function') {
+      this.video.cancelVideoFrameCallback(this._videoFrameRequestId);
+    }
+    this._videoFrameRequestId = null;
+    this._usesVideoFrameCallback = false;
     if (this._resizeObs) {
       this._resizeObs.disconnect();
       this._resizeObs = null;

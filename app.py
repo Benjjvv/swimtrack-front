@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 
 import requests
 from flask import (
@@ -106,6 +107,8 @@ def _sse_detect(
     lap_episode_mode="shadow",
     lap_confidence_threshold=None,
     logger=_LOGGER,
+    request_started=None,
+    upload_save_ms=None,
 ):
     """Generador SSE: un evento por frame siguiendo el contrato de datos.
 
@@ -121,6 +124,14 @@ def _sse_detect(
         else None
     )
     seen_ids = set()
+    sse_started = time.perf_counter()
+    first_event_at = None
+    serialized_bytes = 0
+    serialization_ms = 0.0
+    yield_resume_ms = 0.0
+    emitted_frames = 0
+    completed = False
+    error_emitted = False
     try:
         # Cada stream remoto crea su propia sesión ByteTrack, por lo que dos
         # uploads concurrentes no comparten IDs ni requieren un lock global.
@@ -144,14 +155,33 @@ def _sse_detect(
                             decision["score_version"],
                             decision["threshold"],
                         )
-            yield f"data: {json.dumps(frame)}\n\n"
+            serialization_started = time.perf_counter()
+            event = f"data: {json.dumps(frame)}\n\n"
+            serialization_ms += (time.perf_counter() - serialization_started) * 1000.0
+            emitted_frames += 1
+            serialized_bytes += len(event.encode("utf-8"))
+            if first_event_at is None:
+                first_event_at = time.perf_counter()
+            yield_started = time.perf_counter()
+            yield event
+            # WSGI retoma el generador después de aceptar/escribir el evento. No
+            # equivale a una medición de red exacta, pero muestra backpressure del
+            # response sin registrar contenido ni datos del usuario.
+            yield_resume_ms += (time.perf_counter() - yield_started) * 1000.0
+        completed = True
     except Exception as exc:  # noqa: BLE001
         # La IA real puede fallar a mitad (video corrupto, etc.). El 200 y los
         # headers SSE ya salieron, así que no se puede devolver un 4xx/5xx: en su
         # lugar mandamos un evento SSE de error para que el front lo muestre en
         # vez de cortar el stream en silencio. (F2)
-        yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
+        serialization_started = time.perf_counter()
+        error_event = f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
+        serialization_ms += (time.perf_counter() - serialization_started) * 1000.0
+        serialized_bytes += len(error_event.encode("utf-8"))
+        error_emitted = True
+        yield error_event
     finally:
+        finished_at = time.perf_counter()
         if reducer is not None:
             for episode in reducer.snapshot():
                 logger.info(
@@ -165,6 +195,40 @@ def _sse_detect(
                     episode["score_version"],
                     str(episode["decision_emitted"]).lower(),
                 )
+        def optional_ms(timestamp):
+            if timestamp is None:
+                return "unavailable"
+            return f"{(timestamp - sse_started) * 1000.0:.1f}"
+
+        request_to_first_event_ms = None
+        request_to_end_ms = None
+        if request_started is not None:
+            request_to_end_ms = (finished_at - request_started) * 1000.0
+            if first_event_at is not None:
+                request_to_first_event_ms = (
+                    (first_event_at - request_started) * 1000.0
+                )
+        logger.info(
+            "vision_sse_timing frames=%d first_event_ms=%s sse_elapsed_ms=%.1f "
+            "serialization_ms=%.1f yield_resume_ms=%.1f serialized_bytes=%d "
+            "request_to_first_event_ms=%s request_to_end_ms=%s upload_save_ms=%s "
+            "completed=%s error_emitted=%s",
+            emitted_frames,
+            optional_ms(first_event_at),
+            (finished_at - sse_started) * 1000.0,
+            serialization_ms,
+            yield_resume_ms,
+            serialized_bytes,
+            "unavailable"
+            if request_to_first_event_ms is None
+            else f"{request_to_first_event_ms:.1f}",
+            "unavailable"
+            if request_to_end_ms is None
+            else f"{request_to_end_ms:.1f}",
+            "unavailable" if upload_save_ms is None else f"{upload_save_ms:.1f}",
+            str(completed).lower(),
+            str(error_emitted).lower(),
+        )
         # "El video se procesa y se DESCARTA": no queda nada en disco.
         _remove_file(video_path)
 
@@ -229,6 +293,7 @@ def create_app(config_overrides=None, detector=None):
         (EventSource no sirve: es solo GET). El video se guarda en un temporal
         solo para pasarle una ruta al detector y se borra al cerrar el stream.
         """
+        request_started = time.perf_counter()
         file = request.files.get("video")
         if file is None or not file.filename:
             return jsonify({"ok": False, "error": "Falta el archivo 'video'."}), 400
@@ -245,11 +310,27 @@ def create_app(config_overrides=None, detector=None):
         suffix = uploaded_ext if uploaded_ext in _VIDEO_EXTS else ".mp4"
         fd, tmp_path = tempfile.mkstemp(suffix=suffix)
         os.close(fd)
+        upload_save_started = time.perf_counter()
         try:
             file.save(tmp_path)
         except Exception:
             _remove_file(tmp_path)
             raise
+        upload_save_ms = (time.perf_counter() - upload_save_started) * 1000.0
+        try:
+            upload_bytes = os.path.getsize(tmp_path)
+        except OSError:
+            upload_bytes = 0
+        # Telemetría segura: mide únicamente tamaño y duración; nunca nombre,
+        # path, token, contenido del video ni datos de detecciones.
+        app.logger.info(
+            "vision_upload_timing request_content_length=%s upload_bytes=%d "
+            "save_ms=%.1f handler_elapsed_ms=%.1f",
+            request.content_length,
+            upload_bytes,
+            upload_save_ms,
+            (time.perf_counter() - request_started) * 1000.0,
+        )
 
         response = Response(
             stream_with_context(
@@ -259,6 +340,8 @@ def create_app(config_overrides=None, detector=None):
                     lap_episode_mode=lap_episode_mode,
                     lap_confidence_threshold=lap_confidence_threshold,
                     logger=app.logger,
+                    request_started=request_started,
+                    upload_save_ms=upload_save_ms,
                 )
             ),
             mimetype="text/event-stream",

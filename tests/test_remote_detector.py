@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 import uuid
 
 import httpx
@@ -15,6 +16,8 @@ class FakeCapture:
         self.frames = list(frames)
         self.fps = fps
         self.released = False
+        self.frames_depleted = threading.Event()
+        self.read_calls = 0
 
     def isOpened(self):
         return True
@@ -25,12 +28,57 @@ class FakeCapture:
         return 0
 
     def read(self):
+        self.read_calls += 1
         if not self.frames:
             return False, None
-        return True, self.frames.pop(0)
+        frame = self.frames.pop(0)
+        if not self.frames:
+            self.frames_depleted.set()
+        return True, frame
 
     def release(self):
         self.released = True
+
+
+class FakeNDJSONResponse:
+    def __init__(
+        self,
+        lines,
+        *,
+        status_code=200,
+        headers=None,
+        error_payload=None,
+    ):
+        self.status_code = status_code
+        self.headers = headers or {"content-type": "application/x-ndjson"}
+        self._lines = list(lines)
+        self._error_payload = error_payload or {"detail": "video unavailable"}
+        self.read_called = False
+
+    def iter_lines(self):
+        yield from self._lines
+
+    def read(self):
+        self.read_called = True
+        return json.dumps(self._error_payload).encode("utf-8")
+
+    def json(self):
+        return self._error_payload
+
+
+class FakeStreamContext:
+    def __init__(self, response):
+        self.response = response
+        self.entered = False
+        self.closed = False
+
+    def __enter__(self):
+        self.entered = True
+        return self.response
+
+    def __exit__(self, _exc_type, _exc_value, _traceback):
+        self.closed = True
+        return False
 
 
 class FakeVisionClient:
@@ -41,6 +89,10 @@ class FakeVisionClient:
         include_lap_scores=False,
         tracking_diagnostics_payload=None,
         timing_headers=None,
+        video_lines=None,
+        video_status=200,
+        video_headers=None,
+        video_error_payload=None,
         **kwargs,
     ):
         self.kwargs = kwargs
@@ -48,8 +100,14 @@ class FakeVisionClient:
         self.include_lap_scores = include_lap_scores
         self.tracking_diagnostics_payload = tracking_diagnostics_payload
         self.timing_headers = timing_headers or {}
+        self.video_lines = list(video_lines or [])
+        self.video_status = video_status
+        self.video_headers = video_headers
+        self.video_error_payload = video_error_payload
         self.session_payloads = []
         self.batch_calls = []
+        self.video_calls = []
+        self.video_stream_contexts = []
         self.deleted = []
         self.closed = False
 
@@ -141,6 +199,63 @@ class FakeVisionClient:
     def close(self):
         self.closed = True
 
+    def stream(self, method, url, *, data=None, files=None, headers=None):
+        video = files["video"]
+        self.video_calls.append(
+            {
+                "method": method,
+                "url": url,
+                "data": data,
+                "headers": headers,
+                "filename": video[0],
+                "bytes": video[1].read(),
+                "media_type": video[2],
+            }
+        )
+        context = FakeStreamContext(
+            FakeNDJSONResponse(
+                self.video_lines,
+                status_code=self.video_status,
+                headers=self.video_headers,
+                error_payload=self.video_error_payload,
+            )
+        )
+        self.video_stream_contexts.append(context)
+        return context
+
+
+class BlockingFakeVisionClient(FakeVisionClient):
+    """Hace visible si el consumidor abre requests simultáneos en una sesión."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.first_batch_started = threading.Event()
+        self.release_first_batch = threading.Event()
+        self._batch_post_lock = threading.Lock()
+        self._started_batch_count = 0
+        self.active_batch_posts = 0
+        self.max_active_batch_posts = 0
+
+    def post(self, url, *, json=None, data=None, files=None):
+        if url.endswith("/v1/tracking-sessions"):
+            return super().post(url, json=json, data=data, files=files)
+
+        with self._batch_post_lock:
+            self._started_batch_count += 1
+            batch_call_number = self._started_batch_count
+            self.active_batch_posts += 1
+            self.max_active_batch_posts = max(
+                self.max_active_batch_posts, self.active_batch_posts
+            )
+        try:
+            if batch_call_number == 1:
+                self.first_batch_started.set()
+                assert self.release_first_batch.wait(timeout=2)
+            return super().post(url, json=json, data=data, files=files)
+        finally:
+            with self._batch_post_lock:
+                self.active_batch_posts -= 1
+
 
 def _build_detector(
     monkeypatch,
@@ -151,6 +266,12 @@ def _build_detector(
     tracking_diagnostics="none",
     tracking_diagnostics_payload=None,
     timing_headers=None,
+    block_first_batch=False,
+    transport="frames",
+    video_lines=None,
+    video_status=200,
+    video_headers=None,
+    video_error_payload=None,
     frame_count=3,
     fps=2.0,
     max_fps=15.0,
@@ -159,18 +280,24 @@ def _build_detector(
     frames = [np.zeros((20, 40, 3), dtype=np.uint8) for _ in range(frame_count)]
     capture = FakeCapture(frames, fps=fps)
     monkeypatch.setattr(remote_detector.cv2, "VideoCapture", lambda _path: capture)
-    client = FakeVisionClient(
+    client_class = BlockingFakeVisionClient if block_first_batch else FakeVisionClient
+    client = client_class(
         transient_first_batch=transient_first_batch,
         include_lap_scores=include_lap_scores,
         tracking_diagnostics_payload=tracking_diagnostics_payload,
         timing_headers=timing_headers,
+        video_lines=video_lines,
+        video_status=video_status,
+        video_headers=video_headers,
+        video_error_payload=video_error_payload,
     )
-    batch_ids = iter((uuid.UUID(int=1), uuid.UUID(int=2), uuid.UUID(int=3)))
+    batch_ids = iter(uuid.UUID(int=index) for index in range(1, 100))
     detector = RemoteSwimmerDetector(
         base_url="http://vision.test/",
         auth_token="secret",
         lap_calibration_id=lap_calibration_id,
         tracking_diagnostics=tracking_diagnostics,
+        transport=transport,
         batch_size=batch_size,
         max_fps=max_fps,
         max_retries=2,
@@ -234,14 +361,177 @@ def test_stream_samples_high_fps_and_preserves_source_timestamps(monkeypatch):
     results = list(detector.stream("video.mp4"))
 
     assert client.session_payloads == [{"fps": 15.0}]
-    assert [frame["time"] for frame in results] == pytest.approx(
-        [0.0, 4 / 60, 8 / 60]
-    )
+    assert [frame["time"] for frame in results] == pytest.approx([0.0, 4 / 60, 8 / 60])
     assert [
         item["frame_index"]
         for call in client.batch_calls
         for item in json.loads(call["metadata"])["frames"]
     ] == [0, 4, 8]
+
+
+def test_video_transport_uploads_original_once_and_streams_ndjson(
+    monkeypatch, tmp_path
+):
+    video_path = tmp_path / "sample.mp4"
+    video_path.write_bytes(b"original-compressed-video")
+    detector, capture, client = _build_detector(
+        monkeypatch,
+        transport="video",
+        fps=60.0,
+        max_fps=15.0,
+        video_lines=[
+            json.dumps(
+                {
+                    "frame_index": 0,
+                    "time_ms": 0.0,
+                    "width": 1920,
+                    "height": 1080,
+                    "boxes": [
+                        {
+                            "id": 7,
+                            "x1": 1,
+                            "y1": 2,
+                            "x2": 10,
+                            "y2": 12,
+                            "conf": 0.9,
+                        }
+                    ],
+                }
+            ),
+            json.dumps(
+                {
+                    "frame_index": 4,
+                    "time_ms": 1000 / 15,
+                    "width": 1920,
+                    "height": 1080,
+                    "boxes": [],
+                }
+            ),
+        ],
+    )
+
+    results = list(detector.stream(str(video_path)))
+
+    assert results == [
+        {
+            "time": 0.0,
+            "width": 1920,
+            "height": 1080,
+            "boxes": [
+                {
+                    "id": 7,
+                    "x1": 1.0,
+                    "y1": 2.0,
+                    "x2": 10.0,
+                    "y2": 12.0,
+                    "conf": 0.9,
+                }
+            ],
+        },
+        {"time": pytest.approx(1 / 15), "width": 1920, "height": 1080, "boxes": []},
+    ]
+    assert capture.read_calls == 0
+    assert capture.released
+    assert client.session_payloads == [{"fps": 15.0}]
+    assert client.batch_calls == []
+    assert client.video_calls == [
+        {
+            "method": "POST",
+            "url": "http://vision.test/v1/tracking-sessions/session-1/video",
+            "data": {"sample_fps": "15.0"},
+            "headers": {"Accept": "application/x-ndjson"},
+            "filename": "upload.mp4",
+            "bytes": b"original-compressed-video",
+            "media_type": "video/mp4",
+        }
+    ]
+    assert client.video_stream_contexts[0].entered
+    assert client.video_stream_contexts[0].closed
+    assert client.deleted == ["http://vision.test/v1/tracking-sessions/session-1"]
+    assert client.closed
+
+
+def test_video_transport_rejects_out_of_order_ndjson_and_cleans_up(
+    monkeypatch, tmp_path
+):
+    video_path = tmp_path / "sample.mp4"
+    video_path.write_bytes(b"original-compressed-video")
+    detector, capture, client = _build_detector(
+        monkeypatch,
+        transport="video",
+        video_lines=[
+            json.dumps(
+                {
+                    "frame_index": 2,
+                    "time_ms": 500.0,
+                    "width": 40,
+                    "height": 20,
+                    "boxes": [],
+                }
+            ),
+            json.dumps(
+                {
+                    "frame_index": 1,
+                    "time_ms": 1000.0,
+                    "width": 40,
+                    "height": 20,
+                    "boxes": [],
+                }
+            ),
+        ],
+    )
+
+    with pytest.raises(
+        remote_detector.RemoteDetectorError, match="alteró el orden de los frames"
+    ):
+        list(detector.stream(str(video_path)))
+
+    assert capture.read_calls == 0
+    assert capture.released
+    assert client.video_stream_contexts[0].closed
+    assert client.deleted == ["http://vision.test/v1/tracking-sessions/session-1"]
+    assert client.closed
+
+
+def test_stream_prepares_ahead_but_keeps_one_ordered_request_in_flight(monkeypatch):
+    detector, capture, client = _build_detector(
+        monkeypatch,
+        block_first_batch=True,
+        frame_count=8,
+        batch_size=2,
+    )
+    results = []
+    errors = []
+
+    def consume():
+        try:
+            results.extend(detector.stream("video.mp4"))
+        except BaseException as exc:  # noqa: BLE001 - se propaga para el assert
+            errors.append(exc)
+
+    consumer = threading.Thread(target=consume)
+    consumer.start()
+    try:
+        assert client.first_batch_started.wait(timeout=2)
+        # Mientras el primer request espera la GPU, el productor alcanzó a
+        # preparar los batches siguientes sin abrir otro request de la sesión.
+        assert capture.frames_depleted.wait(timeout=2)
+        assert client._started_batch_count == 1
+        assert client.max_active_batch_posts == 1
+    finally:
+        client.release_first_batch.set()
+        consumer.join(timeout=2)
+
+    assert not consumer.is_alive()
+    assert errors == []
+    assert [frame["time"] for frame in results] == pytest.approx(
+        [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5]
+    )
+    assert [
+        json.loads(call["metadata"])["sequence"] for call in client.batch_calls
+    ] == [0, 1, 2, 3]
+    assert client.max_active_batch_posts == 1
+    assert capture.released
 
 
 def test_stream_logs_front_and_ai_batch_timings(monkeypatch, caplog):
@@ -258,6 +548,9 @@ def test_stream_logs_front_and_ai_batch_timings(monkeypatch, caplog):
     list(detector.stream("video.mp4"))
 
     assert "vision_batch_timing" in caplog.text
+    assert "vision_prepare_batch_timing" in caplog.text
+    assert "vision_prepare_timing" in caplog.text
+    assert "request_transport_ms=" in caplog.text
     assert "ai_decode_ms=3.2" in caplog.text
     assert "ai_process_ms=12.5" in caplog.text
     assert "ai_total_ms=15.8" in caplog.text
@@ -387,12 +680,32 @@ def test_constructor_rejects_unknown_tracking_diagnostics_mode():
         )
 
 
+def test_constructor_rejects_unknown_video_transport():
+    with pytest.raises(ValueError, match="VISION_TRANSPORT debe ser frames o video"):
+        RemoteSwimmerDetector(
+            base_url="http://vision.test",
+            auth_token="secret",
+            transport="auto",  # type: ignore[arg-type]
+        )
+
+
 def test_constructor_rejects_non_positive_sampling_fps():
     with pytest.raises(ValueError, match="VISION_MAX_FPS debe ser mayor que cero"):
         RemoteSwimmerDetector(
             base_url="http://vision.test",
             auth_token="secret",
             max_fps=0,
+        )
+
+
+def test_constructor_rejects_non_positive_prepared_batch_queue_size():
+    with pytest.raises(
+        ValueError, match="VISION_PREPARED_BATCH_QUEUE_SIZE debe ser al menos 1"
+    ):
+        RemoteSwimmerDetector(
+            base_url="http://vision.test",
+            auth_token="secret",
+            prepared_batch_queue_size=0,
         )
 
 

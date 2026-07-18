@@ -62,12 +62,47 @@ class FakeVideo {
   }
 }
 
+class FrameCallbackVideo extends FakeVideo {
+  constructor() {
+    super();
+    this._frameCallbacks = new Map();
+    this._nextFrameCallbackId = 1;
+  }
+
+  requestVideoFrameCallback(callback) {
+    const id = this._nextFrameCallbackId;
+    this._nextFrameCallbackId += 1;
+    this._frameCallbacks.set(id, callback);
+    return id;
+  }
+
+  cancelVideoFrameCallback(id) {
+    this._frameCallbacks.delete(id);
+  }
+
+  present(mediaTime) {
+    const first = this._frameCallbacks.entries().next().value;
+    if (!first) return;
+    const [id, callback] = first;
+    this._frameCallbacks.delete(id);
+    callback(0, { mediaTime, presentedFrames: 1 });
+  }
+
+  get pendingFrameCallbacks() {
+    return this._frameCallbacks.size;
+  }
+}
+
 function fakeCanvas() {
   const context = {
     clearCalls: 0,
     strokeCalls: 0,
     clearRect() { this.clearCalls += 1; },
-    strokeRect() { this.strokeCalls += 1; },
+    strokeRects: [],
+    strokeRect(...args) {
+      this.strokeCalls += 1;
+      this.strokeRects.push(args);
+    },
     fillRect() {},
     fillText() {},
     measureText() { return { width: 0 }; },
@@ -92,6 +127,16 @@ function frame(time) {
 
 function emptyFrame(time) {
   return { ...frame(time), boxes: [] };
+}
+
+function movingFrame(time, x) {
+  return {
+    time,
+    width: 640,
+    height: 640,
+    count: 1,
+    boxes: [{ id: 'swimmer-1', x1: x, y1: 20, x2: x + 60, y2: 120, conf: 0.9 }],
+  };
 }
 
 class ControlledPlayback extends DetectionPlayback {
@@ -177,6 +222,67 @@ test('keeps the most recent boxes through short empty or delayed detection gaps'
 
   playback.frames = [frame(0)];
   assert.equal(playback._frameAt(1.6), null);
+});
+
+test('renders using presented mediaTime and interpolates a stable tracked box', async () => {
+  const video = new FrameCallbackVideo();
+  const canvas = fakeCanvas();
+  const playback = new ControlledPlayback(video, canvas);
+
+  const started = playback.start('blob:video', {}, '/api/detect');
+  await playback.streamStarted.promise;
+  playback._ingestEvent(`data: ${JSON.stringify(movingFrame(0, 0))}`);
+  playback._ingestEvent(`data: ${JSON.stringify(movingFrame(0.2, 100))}`);
+  playback._ingestEvent(`data: ${JSON.stringify(movingFrame(2, 200))}`);
+  await flush();
+
+  // currentTime representa el reloj del elemento; mediaTime es el timestamp del
+  // frame que el compositor acaba de presentar y debe ganar para el overlay.
+  video.currentTime = 1.75;
+  video.present(0.1);
+
+  assert.equal(playback._presentedVideoTime, 0.1);
+  assert.equal(canvas.context.strokeRects.at(-1)[0], 50);
+  assert.equal(video.pendingFrameCallbacks, 1);
+
+  playback.stop();
+  assert.equal(video.pendingFrameCallbacks, 0);
+  playback.streamGate.resolve();
+  await started;
+});
+
+test('adapts the resume target to slow SSE arrivals and reports rebuffer telemetry', async () => {
+  const video = new FakeVideo();
+  const canvas = fakeCanvas();
+  const telemetry = [];
+  const playback = new DetectionPlayback(video, canvas, undefined, undefined, (state) => {
+    telemetry.push(state);
+  });
+  let now = 0;
+  playback._clock = () => now;
+  // Activamos sólo la parte de estado necesaria para probar el controlador de
+  // buffer sin iniciar fetch ni un video real.
+  playback._onTimeUpdate = () => {};
+  playback._ingestEvent(`data: ${JSON.stringify(frame(0))}`);
+  now = 1;
+  playback._ingestEvent(`data: ${JSON.stringify(frame(1))}`);
+
+  assert.equal(playback._resumeBufferSeconds(), 2.25);
+  playback._playStarted = true;
+  playback._setBuffering(true, 'rebuffer');
+  video.currentTime = 0.8;
+  playback._presentedVideoTime = 0.8;
+  playback._resumeIfBuffered(playback._runId);
+  assert.equal(video.playCalls, 0);
+
+  playback.frames.push(frame(3.1));
+  playback._resumeIfBuffered(playback._runId);
+  await flush();
+
+  assert.equal(video.playCalls, 1);
+  assert.equal(telemetry.at(-1).reason, 'playing');
+  assert.equal(telemetry.at(-1).rebufferCount, 1);
+  playback.stop();
 });
 
 test('reports an empty completed stream instead of waiting forever', async () => {

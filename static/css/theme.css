@@ -351,6 +351,13 @@ code, pre, .st-mono {
   animation: st-detection-spin 0.75s linear infinite;
 }
 
+.st-detection-loading-detail {
+  color: rgb(255 255 255 / 0.78);
+  font-size: 0.82rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
 @keyframes st-detection-spin {
   to { transform: rotate(360deg); }
 }

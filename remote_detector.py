@@ -1,9 +1,9 @@
 """Adaptador del front Flask hacia el servicio remoto de visión.
 
-El navegador continúa subiendo un video completo a ``POST /api/detect``. Este
-módulo lo decodifica, comprime frames 640x640 en JPEG y los envía en batches
-secuenciales a una sesión remota. El contrato público de ``stream()`` sigue
-siendo el que consume el generador SSE del front.
+El navegador continúa subiendo un video completo a ``POST /api/detect``. Según
+``VISION_TRANSPORT``, este módulo envía batches JPEG preparados localmente o el
+archivo original al decoder de la GPU. El contrato público de ``stream()``
+sigue siendo el que consume el generador SSE del front.
 """
 
 from __future__ import annotations
@@ -11,10 +11,14 @@ from __future__ import annotations
 import json
 import logging
 import math
+import mimetypes
+import queue
+import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 import cv2
@@ -46,6 +50,51 @@ class _EncodedFrame:
         }
 
 
+@dataclass(frozen=True)
+class _StreamInfo:
+    """Metadata del video disponible antes de iniciar el transporte remoto."""
+
+    source_fps: float
+    tracking_fps: float
+    sample_stride: int
+
+
+@dataclass(frozen=True)
+class _PreparedBatch:
+    """Un batch JPEG preparado por el productor local, aún no enviado."""
+
+    frames: tuple[_EncodedFrame, ...]
+
+
+@dataclass(frozen=True)
+class _PreparationComplete:
+    """Marca ordenada que cierra la cola de batches preparados."""
+
+    source_frame_count: int
+
+
+@dataclass(frozen=True)
+class _PreparationFailure:
+    """Error de decode/encode enviado al consumidor en vez de un thread traceback."""
+
+    error: RemoteDetectorError
+
+
+@dataclass
+class _PreparationTimings:
+    """Acumuladores locales del productor, expresados en milisegundos."""
+
+    decode_ms: float = 0.0
+    select_ms: float = 0.0
+    resize_ms: float = 0.0
+    jpeg_encode_ms: float = 0.0
+    queue_wait_ms: float = 0.0
+    jpeg_bytes: int = 0
+    source_frames: int = 0
+    selected_frames: int = 0
+    batches: int = 0
+
+
 class RemoteSwimmerDetector:
     """Implementa ``stream(video_path)`` usando RT-DETRv2 + ByteTrack remotos.
 
@@ -62,7 +111,9 @@ class RemoteSwimmerDetector:
         auth_token: str,
         lap_calibration_id: str | None = None,
         tracking_diagnostics: Literal["none", "counts", "boxes"] = "none",
+        transport: Literal["frames", "video"] = "frames",
         batch_size: int = 4,
+        prepared_batch_queue_size: int = 2,
         max_fps: float = 15.0,
         inference_size: int = 640,
         jpeg_quality: int = 85,
@@ -83,6 +134,8 @@ class RemoteSwimmerDetector:
             raise ValueError("VISION_BASE_URL no puede estar vacío.")
         if batch_size < 1:
             raise ValueError("VISION_BATCH_SIZE debe ser al menos 1.")
+        if prepared_batch_queue_size < 1:
+            raise ValueError("VISION_PREPARED_BATCH_QUEUE_SIZE debe ser al menos 1.")
         if not math.isfinite(max_fps) or max_fps <= 0:
             raise ValueError("VISION_MAX_FPS debe ser mayor que cero.")
         if inference_size < 1:
@@ -104,6 +157,11 @@ class RemoteSwimmerDetector:
             raise ValueError(
                 "VISION_TRACKING_DIAGNOSTICS debe ser none, counts o boxes."
             )
+        if not isinstance(transport, str):
+            raise ValueError("VISION_TRANSPORT debe ser frames o video.")
+        transport = transport.strip().lower()
+        if transport not in {"frames", "video"}:
+            raise ValueError("VISION_TRANSPORT debe ser frames o video.")
 
         self.base_url = base_url.rstrip("/")
         self.auth_token = auth_token
@@ -111,7 +169,9 @@ class RemoteSwimmerDetector:
             lap_calibration_id.strip() if lap_calibration_id else None
         )
         self.tracking_diagnostics = tracking_diagnostics
+        self.transport = transport
         self.batch_size = batch_size
+        self.prepared_batch_queue_size = prepared_batch_queue_size
         self.max_fps = max_fps
         self.inference_size = inference_size
         self.jpeg_quality = jpeg_quality
@@ -141,7 +201,11 @@ class RemoteSwimmerDetector:
             auth_token=config.get("VISION_AUTH_TOKEN", ""),
             lap_calibration_id=config.get("VISION_LAP_CALIBRATION_ID"),
             tracking_diagnostics=config.get("VISION_TRACKING_DIAGNOSTICS", "none"),
+            transport=config.get("VISION_TRANSPORT", "frames"),
             batch_size=int(config["VISION_BATCH_SIZE"]),
+            prepared_batch_queue_size=int(
+                config.get("VISION_PREPARED_BATCH_QUEUE_SIZE", 2)
+            ),
             max_fps=float(config["VISION_MAX_FPS"]),
             inference_size=int(config["VISION_INFERENCE_SIZE"]),
             jpeg_quality=int(config["VISION_JPEG_QUALITY"]),
@@ -157,93 +221,582 @@ class RemoteSwimmerDetector:
         )
 
     def stream(self, video_path: str) -> Iterator[dict[str, Any]]:
-        """Decodifica ``video_path`` y emite un resultado SSE-ready por frame."""
-        capture = cv2.VideoCapture(video_path)
-        if not capture.isOpened():
-            capture.release()
-            raise RemoteDetectorError("No se pudo abrir el video subido.")
+        """Emite resultados ordenados usando el transporte configurado.
 
-        fps = float(capture.get(cv2.CAP_PROP_FPS))
-        if not math.isfinite(fps) or fps <= 0:
-            fps = self.fallback_fps
+        ``frames`` conserva el transporte JPEG idempotente actual. ``video``
+        evita decodificar el archivo en el Front: sólo inspecciona su FPS y lo
+        retransmite una vez al servicio que decodifica en la GPU.
+        """
+        if self.transport == "video":
+            yield from self._stream_video(video_path)
+            return
+        yield from self._stream_frames(video_path)
 
-        sample_stride = max(1, math.ceil(fps / self.max_fps))
-        tracking_fps = fps / sample_stride
-        self._logger.info(
-            "vision_stream_sampling source_fps=%.3f sampled_fps=%.3f stride=%d",
-            fps,
-            tracking_fps,
-            sample_stride,
+    def _stream_frames(self, video_path: str) -> Iterator[dict[str, Any]]:
+        """Emite resultados ordenados mientras prepara el siguiente batch.
+
+        El productor solo lee, muestrea y codifica JPEG. El consumidor (este
+        generador) conserva un único request HTTP en vuelo, por lo que ByteTrack
+        recibe exactamente la misma secuencia temporal que antes. La cola tiene
+        un límite estricto para no acumular video comprimido si la GPU se atrasa.
+        """
+        info_queue: queue.Queue[_StreamInfo | _PreparationFailure] = queue.Queue(
+            maxsize=1
         )
-
+        prepared_queue: queue.Queue[
+            _PreparedBatch | _PreparationComplete | _PreparationFailure
+        ] = queue.Queue(maxsize=self.prepared_batch_queue_size)
+        stop_event = threading.Event()
+        preparer = threading.Thread(
+            target=self._prepare_video,
+            args=(video_path, info_queue, prepared_queue, stop_event),
+            name="swimtrack-frame-preparer",
+            daemon=True,
+        )
         client: httpx.Client | None = None
         session_id: str | None = None
         sequence = 0
-        pending: list[_EncodedFrame] = []
-        source_frame_count = 0
 
+        preparer.start()
         try:
+            info_message = self._next_preparation_message(info_queue, preparer)
+            if isinstance(info_message, _PreparationFailure):
+                raise info_message.error
+            if not isinstance(info_message, _StreamInfo):  # defensa de contrato
+                raise RemoteDetectorError(
+                    "El preparador de video respondió inválidamente."
+                )
+
             client = self._client_factory(
                 headers={"X-Swimtrack-Auth": self.auth_token},
                 timeout=self._timeout,
             )
-            session_id = self._create_session(client, tracking_fps)
+            session_started = time.perf_counter()
+            session_id = self._create_session(client, info_message.tracking_fps)
+            self._logger.info(
+                "vision_session_timing source_fps=%.3f sampled_fps=%.3f stride=%d "
+                "create_ms=%.1f",
+                info_message.source_fps,
+                info_message.tracking_fps,
+                info_message.sample_stride,
+                (time.perf_counter() - session_started) * 1000.0,
+            )
 
             while True:
-                ok, frame = capture.read()
-                if not ok:
+                prepared_message = self._next_preparation_message(
+                    prepared_queue, preparer
+                )
+                if isinstance(prepared_message, _PreparationFailure):
+                    raise prepared_message.error
+                if isinstance(prepared_message, _PreparationComplete):
+                    if prepared_message.source_frame_count == 0:
+                        raise RemoteDetectorError(
+                            "El video subido no contiene frames decodificables."
+                        )
                     break
-
-                if source_frame_count % sample_stride == 0:
-                    pending.append(
-                        self._encode_frame(frame, source_frame_count, fps)
+                if not isinstance(prepared_message, _PreparedBatch):
+                    raise RemoteDetectorError(
+                        "El preparador de video respondió con un batch inválido."
                     )
 
-                    if len(pending) == self.batch_size:
-                        results, sequence = self._send_batch(
-                            client, session_id, sequence, pending
-                        )
-                        yield from results
-                        pending = []
-                source_frame_count += 1
-
-            if pending:
+                # Solo este consumidor toca ``client``. No hay dos requests de
+                # la misma sesión en paralelo y las secuencias siguen siendo 0,1,2…
                 results, sequence = self._send_batch(
-                    client, session_id, sequence, pending
+                    client,
+                    session_id,
+                    sequence,
+                    prepared_message.frames,
                 )
                 yield from results
-
-            if source_frame_count == 0:
-                raise RemoteDetectorError(
-                    "El video subido no contiene frames decodificables."
-                )
         finally:
-            capture.release()
+            self._stop_preparer(preparer, stop_event)
             if client is not None and session_id is not None:
                 self._close_session(client, session_id)
             if client is not None:
                 client.close()
 
-    def _encode_frame(self, frame: Any, frame_index: int, fps: float) -> _EncodedFrame:
+    def _stream_video(self, video_path: str) -> Iterator[dict[str, Any]]:
+        """Reenvía un video original y normaliza su NDJSON de resultados.
+
+        Esta ruta no hace ``capture.read()``: el Front sólo obtiene FPS para
+        mantener el sampling histórico de ByteTrack. El upload de streaming no
+        se reintenta, porque el endpoint avanza estado de tracking y no tiene
+        un ``batch_id`` idempotente equivalente al transporte JPEG.
+        """
+        stream_info = self._read_video_stream_info(video_path)
+        client: httpx.Client | None = None
+        session_id: str | None = None
+        try:
+            client = self._client_factory(
+                headers={"X-Swimtrack-Auth": self.auth_token},
+                timeout=self._timeout,
+            )
+            session_started = time.perf_counter()
+            session_id = self._create_session(client, stream_info.tracking_fps)
+            self._logger.info(
+                "vision_session_timing transport=video source_fps=%.3f "
+                "sampled_fps=%.3f stride=%d create_ms=%.1f",
+                stream_info.source_fps,
+                stream_info.tracking_fps,
+                stream_info.sample_stride,
+                (time.perf_counter() - session_started) * 1000.0,
+            )
+            yield from self._upload_video_stream(
+                client,
+                session_id,
+                video_path,
+                stream_info,
+            )
+        finally:
+            if client is not None and session_id is not None:
+                self._close_session(client, session_id)
+            if client is not None:
+                client.close()
+
+    def _read_video_stream_info(self, video_path: str) -> _StreamInfo:
+        """Obtiene únicamente FPS local; el decode completo queda en la GPU."""
+        capture: Any | None = None
+        try:
+            capture = cv2.VideoCapture(video_path)
+            if not capture.isOpened():
+                raise RemoteDetectorError("No se pudo abrir el video subido.")
+            fps = float(capture.get(cv2.CAP_PROP_FPS))
+        except RemoteDetectorError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - normaliza errores del backend OpenCV
+            raise RemoteDetectorError(
+                "No se pudo inspeccionar el video subido."
+            ) from exc
+        finally:
+            if capture is not None:
+                capture.release()
+
+        if not math.isfinite(fps) or fps <= 0:
+            fps = self.fallback_fps
+        sample_stride = max(1, math.ceil(fps / self.max_fps))
+        stream_info = _StreamInfo(
+            source_fps=fps,
+            tracking_fps=fps / sample_stride,
+            sample_stride=sample_stride,
+        )
+        self._logger.info(
+            "vision_video_metadata source_fps=%.3f sampled_fps=%.3f stride=%d",
+            stream_info.source_fps,
+            stream_info.tracking_fps,
+            stream_info.sample_stride,
+        )
+        return stream_info
+
+    def _upload_video_stream(
+        self,
+        client: httpx.Client,
+        session_id: str,
+        video_path: str,
+        stream_info: _StreamInfo,
+    ) -> Iterator[dict[str, Any]]:
+        """Envía una vez el archivo y consume un ``FrameResult`` NDJSON por línea."""
+        upload_started = time.perf_counter()
+        first_frame_at: float | None = None
+        previous_frame_index: int | None = None
+        previous_time_ms: float | None = None
+        emitted_frames = 0
+        completed = False
+        path = Path(video_path)
+        suffix = path.suffix.lower() or ".mp4"
+        filename = f"upload{suffix}"
+        media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        try:
+            with path.open("rb") as video_file:
+                with client.stream(
+                    "POST",
+                    f"{self.base_url}/v1/tracking-sessions/{session_id}/video",
+                    data={"sample_fps": str(stream_info.tracking_fps)},
+                    files={"video": (filename, video_file, media_type)},
+                    headers={"Accept": "application/x-ndjson"},
+                ) as response:
+                    if response.status_code != 200:
+                        # En HTTPX streaming, el body aún no se ha leído y
+                        # ``response.json()`` no estaría disponible sin esto.
+                        response.read()
+                        self._ensure_success(response, expected_status=200)
+                    content_type = response.headers.get("content-type", "")
+                    content_type = content_type.split(";", 1)[0].strip().lower()
+                    if content_type != "application/x-ndjson":
+                        raise RemoteDetectorError(
+                            "El servicio IA no devolvió application/x-ndjson."
+                        )
+                    for line in response.iter_lines():
+                        if not line:
+                            continue
+                        if isinstance(line, bytes):
+                            try:
+                                line = line.decode("utf-8")
+                            except UnicodeDecodeError as exc:
+                                raise RemoteDetectorError(
+                                    "El servicio IA devolvió NDJSON inválido."
+                                ) from exc
+                        try:
+                            payload = json.loads(line)
+                        except (TypeError, ValueError) as exc:
+                            raise RemoteDetectorError(
+                                "El servicio IA devolvió NDJSON inválido."
+                            ) from exc
+                        frame, previous_frame_index, previous_time_ms = (
+                            self._normalize_video_stream_frame(
+                                payload,
+                                previous_frame_index=previous_frame_index,
+                                previous_time_ms=previous_time_ms,
+                            )
+                        )
+                        emitted_frames += 1
+                        if first_frame_at is None:
+                            first_frame_at = time.perf_counter()
+                        yield frame
+            if emitted_frames == 0:
+                raise RemoteDetectorError(
+                    "El servicio IA no emitió frames para el video subido."
+                )
+            completed = True
+        except OSError as exc:
+            raise RemoteDetectorError("No se pudo leer el video subido.") from exc
+        except httpx.HTTPError as exc:
+            raise RemoteDetectorError(
+                "No se pudo conectar con el servicio de detección."
+            ) from exc
+        finally:
+            finished_at = time.perf_counter()
+            first_frame_ms = (
+                "unavailable"
+                if first_frame_at is None
+                else f"{(first_frame_at - upload_started) * 1000.0:.1f}"
+            )
+            self._logger.info(
+                "vision_video_upload_timing source_fps=%.3f sampled_fps=%.3f "
+                "stride=%d frames=%d first_frame_ms=%s elapsed_ms=%.1f completed=%s",
+                stream_info.source_fps,
+                stream_info.tracking_fps,
+                stream_info.sample_stride,
+                emitted_frames,
+                first_frame_ms,
+                (finished_at - upload_started) * 1000.0,
+                str(completed).lower(),
+            )
+
+    def _normalize_video_stream_frame(
+        self,
+        payload: Any,
+        *,
+        previous_frame_index: int | None,
+        previous_time_ms: float | None,
+    ) -> tuple[dict[str, Any], int, float]:
+        """Valida el contrato NDJSON y lo convierte al FrameResult del BFF."""
+        if not isinstance(payload, dict):
+            raise RemoteDetectorError("El servicio IA devolvió un frame inválido.")
+        frame_index = payload.get("frame_index")
+        width = payload.get("width")
+        height = payload.get("height")
+        time_ms = payload.get("time_ms")
+        if not self._is_integer(frame_index) or frame_index < 0:
+            raise RemoteDetectorError("El servicio IA devolvió frame_index inválido.")
+        if not self._is_integer(width) or width < 1:
+            raise RemoteDetectorError("El servicio IA devolvió width inválido.")
+        if not self._is_integer(height) or height < 1:
+            raise RemoteDetectorError("El servicio IA devolvió height inválido.")
+        if isinstance(time_ms, bool):
+            raise RemoteDetectorError("El servicio IA devolvió time_ms inválido.")
+        try:
+            normalized_time_ms = float(time_ms)
+        except (TypeError, ValueError) as exc:
+            raise RemoteDetectorError(
+                "El servicio IA devolvió time_ms inválido."
+            ) from exc
+        if not math.isfinite(normalized_time_ms) or normalized_time_ms < 0:
+            raise RemoteDetectorError("El servicio IA devolvió time_ms inválido.")
+        if previous_frame_index is not None and frame_index <= previous_frame_index:
+            raise RemoteDetectorError("El servicio IA alteró el orden de los frames.")
+        if previous_time_ms is not None and normalized_time_ms < previous_time_ms:
+            raise RemoteDetectorError("El servicio IA alteró el orden temporal.")
+
+        boxes = payload.get("boxes")
+        if not isinstance(boxes, list):
+            raise RemoteDetectorError("El servicio IA contiene boxes inválidas.")
+        normalized_frame: dict[str, Any] = {
+            "time": normalized_time_ms / 1000.0,
+            "width": int(width),
+            "height": int(height),
+            "boxes": [self._normalize_box(box) for box in boxes],
+        }
+        lap_scores = payload.get("lap_scores")
+        if lap_scores is not None:
+            if not isinstance(lap_scores, list):
+                raise RemoteDetectorError(
+                    "El servicio IA contiene lap_scores inválidos."
+                )
+            normalized_frame["lap_scores"] = [
+                self._normalize_lap_score(score) for score in lap_scores
+            ]
+        tracking_diagnostics = payload.get("tracking_diagnostics")
+        if tracking_diagnostics is not None:
+            normalized_frame["tracking_diagnostics"] = (
+                self._normalize_tracking_diagnostics(tracking_diagnostics)
+            )
+        return normalized_frame, frame_index, normalized_time_ms
+
+    def _prepare_video(
+        self,
+        video_path: str,
+        info_queue: queue.Queue[_StreamInfo | _PreparationFailure],
+        prepared_queue: queue.Queue[
+            _PreparedBatch | _PreparationComplete | _PreparationFailure
+        ],
+        stop_event: threading.Event,
+    ) -> None:
+        """Produce batches JPEG ordenados sin bloquear al request en curso."""
+        capture: Any | None = None
+        info_sent = False
+        timings = _PreparationTimings()
+        preparation_started = time.perf_counter()
+        completed = False
+        try:
+            capture = cv2.VideoCapture(video_path)
+            if not capture.isOpened():
+                raise RemoteDetectorError("No se pudo abrir el video subido.")
+
+            fps = float(capture.get(cv2.CAP_PROP_FPS))
+            if not math.isfinite(fps) or fps <= 0:
+                fps = self.fallback_fps
+            sample_stride = max(1, math.ceil(fps / self.max_fps))
+            tracking_fps = fps / sample_stride
+            stream_info = _StreamInfo(
+                source_fps=fps,
+                tracking_fps=tracking_fps,
+                sample_stride=sample_stride,
+            )
+            self._logger.info(
+                "vision_stream_sampling source_fps=%.3f sampled_fps=%.3f stride=%d "
+                "prepared_batch_queue_size=%d",
+                fps,
+                tracking_fps,
+                sample_stride,
+                self.prepared_batch_queue_size,
+            )
+            if not self._put_preparation_message(info_queue, stream_info, stop_event):
+                return
+            info_sent = True
+
+            pending: list[_EncodedFrame] = []
+            batch_timings = _PreparationTimings()
+            source_frame_count = 0
+            batch_index = 0
+
+            while not stop_event.is_set():
+                decode_started = time.perf_counter()
+                ok, frame = capture.read()
+                decode_ms = (time.perf_counter() - decode_started) * 1000.0
+                timings.decode_ms += decode_ms
+                batch_timings.decode_ms += decode_ms
+                if not ok:
+                    break
+
+                frame_index = source_frame_count
+                source_frame_count += 1
+                timings.source_frames += 1
+                batch_timings.source_frames += 1
+
+                select_started = time.perf_counter()
+                selected = frame_index % sample_stride == 0
+                select_ms = (time.perf_counter() - select_started) * 1000.0
+                timings.select_ms += select_ms
+                batch_timings.select_ms += select_ms
+                if not selected:
+                    continue
+
+                encoded, resize_ms, jpeg_encode_ms = self._encode_frame(
+                    frame, frame_index, fps
+                )
+                timings.selected_frames += 1
+                batch_timings.selected_frames += 1
+                timings.resize_ms += resize_ms
+                batch_timings.resize_ms += resize_ms
+                timings.jpeg_encode_ms += jpeg_encode_ms
+                batch_timings.jpeg_encode_ms += jpeg_encode_ms
+                timings.jpeg_bytes += len(encoded.jpeg)
+                batch_timings.jpeg_bytes += len(encoded.jpeg)
+                pending.append(encoded)
+
+                if len(pending) == self.batch_size:
+                    if not self._enqueue_prepared_batch(
+                        prepared_queue,
+                        _PreparedBatch(frames=tuple(pending)),
+                        stop_event,
+                        batch_index,
+                        batch_timings,
+                        timings,
+                    ):
+                        return
+                    batch_index += 1
+                    pending = []
+                    batch_timings = _PreparationTimings()
+
+            if pending and not stop_event.is_set():
+                if not self._enqueue_prepared_batch(
+                    prepared_queue,
+                    _PreparedBatch(frames=tuple(pending)),
+                    stop_event,
+                    batch_index,
+                    batch_timings,
+                    timings,
+                ):
+                    return
+
+            if not stop_event.is_set():
+                completed = self._put_preparation_message(
+                    prepared_queue,
+                    _PreparationComplete(source_frame_count=source_frame_count),
+                    stop_event,
+                )
+        except Exception as exc:  # noqa: BLE001 - el error cruza el límite del thread
+            error = (
+                exc
+                if isinstance(exc, RemoteDetectorError)
+                else RemoteDetectorError("No se pudo preparar el video subido.")
+            )
+            self._logger.warning(
+                "vision_prepare_failed error_type=%s", type(exc).__name__
+            )
+            target_queue: queue.Queue[Any] = prepared_queue if info_sent else info_queue
+            self._put_preparation_message(
+                target_queue, _PreparationFailure(error=error), stop_event
+            )
+        finally:
+            if capture is not None:
+                capture.release()
+            self._logger.info(
+                "vision_prepare_timing source_frames=%d selected_frames=%d batches=%d "
+                "decode_ms=%.1f select_ms=%.1f resize_ms=%.1f jpeg_encode_ms=%.1f "
+                "jpeg_bytes=%d queue_wait_ms=%.1f elapsed_ms=%.1f completed=%s",
+                timings.source_frames,
+                timings.selected_frames,
+                timings.batches,
+                timings.decode_ms,
+                timings.select_ms,
+                timings.resize_ms,
+                timings.jpeg_encode_ms,
+                timings.jpeg_bytes,
+                timings.queue_wait_ms,
+                (time.perf_counter() - preparation_started) * 1000.0,
+                str(completed).lower(),
+            )
+
+    def _enqueue_prepared_batch(
+        self,
+        prepared_queue: queue.Queue[
+            _PreparedBatch | _PreparationComplete | _PreparationFailure
+        ],
+        batch: _PreparedBatch,
+        stop_event: threading.Event,
+        batch_index: int,
+        batch_timings: _PreparationTimings,
+        total_timings: _PreparationTimings,
+    ) -> bool:
+        queue_started = time.perf_counter()
+        queued = self._put_preparation_message(prepared_queue, batch, stop_event)
+        queue_wait_ms = (time.perf_counter() - queue_started) * 1000.0
+        batch_timings.queue_wait_ms += queue_wait_ms
+        total_timings.queue_wait_ms += queue_wait_ms
+        if not queued:
+            return False
+
+        batch_timings.batches = 1
+        total_timings.batches += 1
+        frames = batch.frames
+        self._logger.info(
+            "vision_prepare_batch_timing batch_index=%d frames=%d frame_range=%d-%d "
+            "source_frames=%d decode_ms=%.1f select_ms=%.1f resize_ms=%.1f "
+            "jpeg_encode_ms=%.1f jpeg_bytes=%d queue_wait_ms=%.1f",
+            batch_index,
+            len(frames),
+            frames[0].frame_index,
+            frames[-1].frame_index,
+            batch_timings.source_frames,
+            batch_timings.decode_ms,
+            batch_timings.select_ms,
+            batch_timings.resize_ms,
+            batch_timings.jpeg_encode_ms,
+            batch_timings.jpeg_bytes,
+            batch_timings.queue_wait_ms,
+        )
+        return True
+
+    @staticmethod
+    def _put_preparation_message(
+        message_queue: queue.Queue[Any],
+        message: Any,
+        stop_event: threading.Event,
+    ) -> bool:
+        """Hace el put cancelable para que un cliente desconectado no deje hilos."""
+        while not stop_event.is_set():
+            try:
+                message_queue.put(message, timeout=0.1)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    @staticmethod
+    def _next_preparation_message(
+        message_queue: queue.Queue[Any], preparer: threading.Thread
+    ) -> Any:
+        while True:
+            try:
+                return message_queue.get(timeout=0.1)
+            except queue.Empty:
+                if not preparer.is_alive():
+                    raise RemoteDetectorError(
+                        "La preparación del video terminó inesperadamente."
+                    )
+
+    def _stop_preparer(
+        self, preparer: threading.Thread, stop_event: threading.Event
+    ) -> None:
+        stop_event.set()
+        preparer.join(timeout=self.cleanup_timeout)
+        if preparer.is_alive():
+            self._logger.warning(
+                "vision_prepare_shutdown_timeout timeout_seconds=%.1f",
+                self.cleanup_timeout,
+            )
+
+    def _encode_frame(
+        self, frame: Any, frame_index: int, fps: float
+    ) -> tuple[_EncodedFrame, float, float]:
         height, width = frame.shape[:2]
+        resize_started = time.perf_counter()
         resized = cv2.resize(
             frame,
             (self.inference_size, self.inference_size),
             interpolation=cv2.INTER_LINEAR,
         )
+        resize_ms = (time.perf_counter() - resize_started) * 1000.0
+        jpeg_started = time.perf_counter()
         ok, encoded = cv2.imencode(
             ".jpg",
             resized,
             [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality],
         )
+        jpeg_encode_ms = (time.perf_counter() - jpeg_started) * 1000.0
         if not ok:
             raise RemoteDetectorError(f"No se pudo codificar el frame {frame_index}.")
-        return _EncodedFrame(
-            frame_index=frame_index,
-            time_ms=frame_index * 1000.0 / fps,
-            original_width=int(width),
-            original_height=int(height),
-            jpeg=encoded.tobytes(),
+        return (
+            _EncodedFrame(
+                frame_index=frame_index,
+                time_ms=frame_index * 1000.0 / fps,
+                original_width=int(width),
+                original_height=int(height),
+                jpeg=encoded.tobytes(),
+            ),
+            resize_ms,
+            jpeg_encode_ms,
         )
 
     def _create_session(self, client: httpx.Client, fps: float) -> str:
@@ -296,7 +849,10 @@ class RemoteSwimmerDetector:
 
         response: httpx.Response | None = None
         last_transport_error: httpx.HTTPError | None = None
+        request_transport_ms = 0.0
+        retry_backoff_ms = 0.0
         for attempt in range(self.max_retries + 1):
+            request_started = time.perf_counter()
             try:
                 response = client.post(
                     f"{self.base_url}/v1/tracking-sessions/{session_id}/batches",
@@ -305,17 +861,23 @@ class RemoteSwimmerDetector:
                 )
                 last_transport_error = None
             except httpx.HTTPError as exc:
+                request_transport_ms += (time.perf_counter() - request_started) * 1000.0
                 last_transport_error = exc
                 if attempt == self.max_retries:
                     break
+                backoff_started = time.perf_counter()
                 self._wait_before_retry(attempt)
+                retry_backoff_ms += (time.perf_counter() - backoff_started) * 1000.0
                 continue
+            request_transport_ms += (time.perf_counter() - request_started) * 1000.0
 
             if (
                 response.status_code in _RETRYABLE_STATUS_CODES
                 and attempt < self.max_retries
             ):
+                backoff_started = time.perf_counter()
                 self._wait_before_retry(attempt)
+                retry_backoff_ms += (time.perf_counter() - backoff_started) * 1000.0
                 continue
             break
 
@@ -333,6 +895,8 @@ class RemoteSwimmerDetector:
             frames=frames,
             attempts=attempt + 1,
             roundtrip_ms=(time.perf_counter() - batch_started) * 1000.0,
+            request_transport_ms=request_transport_ms,
+            retry_backoff_ms=retry_backoff_ms,
         )
         payload = self._response_json(response)
         results = self._validate_batch_response(
@@ -365,6 +929,8 @@ class RemoteSwimmerDetector:
         frames: Sequence[_EncodedFrame],
         attempts: int,
         roundtrip_ms: float,
+        request_transport_ms: float,
+        retry_backoff_ms: float,
     ) -> None:
         def metric(header: str) -> str:
             value = self._response_timing(response, header)
@@ -372,13 +938,16 @@ class RemoteSwimmerDetector:
 
         self._logger.info(
             "vision_batch_timing sequence=%d frames=%d frame_range=%d-%d attempts=%d "
-            "roundtrip_ms=%.1f ai_decode_ms=%s ai_process_ms=%s ai_total_ms=%s",
+            "roundtrip_ms=%.1f request_transport_ms=%.1f retry_backoff_ms=%.1f "
+            "ai_decode_ms=%s ai_process_ms=%s ai_total_ms=%s",
             sequence,
             len(frames),
             frames[0].frame_index,
             frames[-1].frame_index,
             attempts,
             roundtrip_ms,
+            request_transport_ms,
+            retry_backoff_ms,
             metric("X-Swimtrack-Decode-Ms"),
             metric("X-Swimtrack-Process-Ms"),
             metric("X-Swimtrack-Total-Ms"),

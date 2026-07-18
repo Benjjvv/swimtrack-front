@@ -109,6 +109,27 @@ def test_detect_preserves_sse_contract_and_removes_upload():
     assert not os.path.exists(detector.video_path)
 
 
+def test_detect_logs_safe_upload_and_sse_timings(caplog):
+    caplog.set_level("INFO")
+    app = create_app({"TESTING": True, "URL_PREFIX": "/"}, detector=FakeDetector())
+
+    with app.test_client() as client:
+        response = client.post(
+            "/api/detect",
+            data={"video": (io.BytesIO(b"fake-video"), "sample.mp4")},
+            content_type="multipart/form-data",
+        )
+        response.get_data()
+        response.close()
+
+    assert "vision_upload_timing" in caplog.text
+    assert "vision_sse_timing" in caplog.text
+    assert "upload_bytes=" in caplog.text
+    assert "request_to_first_event_ms=" in caplog.text
+    assert "sample.mp4" not in caplog.text
+    assert "fake-video" not in caplog.text
+
+
 def test_detect_rejects_non_video_before_starting_sse():
     detector = FakeDetector()
     app = create_app({"TESTING": True, "URL_PREFIX": "/"}, detector=detector)

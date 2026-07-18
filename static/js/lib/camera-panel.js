@@ -29,6 +29,8 @@ export function initCameraPanel() {
   const canvas = document.getElementById('cameraCanvas');
   const placeholder = document.getElementById('cameraPlaceholder');
   const loadingEl = document.getElementById('detectionLoading');
+  const loadingLabelEl = document.getElementById('detectionLoadingLabel');
+  const loadingDetailEl = document.getElementById('detectionLoadingDetail');
   const countEl = document.getElementById('detectionCount');
   const startBtn = document.getElementById('startCameraBtn');
   const demoBtn = document.getElementById('demoModeBtn');
@@ -43,8 +45,32 @@ export function initCameraPanel() {
     if (!loadingEl) return;
     loadingEl.classList.toggle('d-none', !isBuffering);
     loadingEl.setAttribute('aria-hidden', String(!isBuffering));
+    if (!isBuffering) {
+      if (loadingLabelEl) loadingLabelEl.textContent = 'Cargando detecciones…';
+      if (loadingDetailEl) loadingDetailEl.textContent = '';
+    }
   }
-  const playback = new DetectionPlayback(video, canvas, setCount, setDetectionLoading);
+
+  function setDetectionBufferTelemetry(telemetry) {
+    if (!loadingEl || loadingEl.classList.contains('d-none')) return;
+    const target = telemetry.reason === 'initial'
+      ? telemetry.initialThreshold
+      : telemetry.resumeThreshold;
+    const reason = telemetry.reason === 'rebuffer' ? 'Sincronizando detecciones…' : 'Cargando detecciones…';
+    const ahead = Number.isFinite(telemetry.bufferAhead) ? Math.max(0, telemetry.bufferAhead) : 0;
+    if (loadingLabelEl) loadingLabelEl.textContent = reason;
+    if (loadingDetailEl) {
+      const rebuffers = telemetry.rebufferCount ? ` · Pausas: ${telemetry.rebufferCount}` : '';
+      loadingDetailEl.textContent = `Buffer: ${ahead.toFixed(1)} / ${target.toFixed(1)} s${rebuffers}`;
+    }
+  }
+  const playback = new DetectionPlayback(
+    video,
+    canvas,
+    setCount,
+    setDetectionLoading,
+    setDetectionBufferTelemetry,
+  );
   const overlay = createDetectionOverlayState();
   /** @type {DetectionLoop|null} */
   let loop = null;

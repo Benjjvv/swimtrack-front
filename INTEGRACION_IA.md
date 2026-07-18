@@ -1,19 +1,19 @@
 # Integración con el servicio remoto de visión
 
-El navegador conserva el contrato existente: sube un video con `POST /api/detect` y consume una respuesta SSE con un evento por frame. Flask funciona como BFF: guarda el upload temporalmente, decodifica el video, envía batches de JPEG al servicio privado con GPU y retransmite las detecciones al navegador. El JavaScript no conoce la URL ni el token del servicio IA.
+El navegador conserva el contrato existente: sube un video con `POST /api/detect` y consume una respuesta SSE con un evento por frame. Flask funciona como BFF: guarda el upload temporalmente y retransmite las detecciones al navegador; el JavaScript no conoce la URL ni el token del servicio IA. `VISION_TRANSPORT=frames` (default) conserva el decode local y los batches JPEG idempotentes. `VISION_TRANSPORT=video` reenvía el archivo comprimido una sola vez para que el servicio GPU lo decodifique y devuelva NDJSON.
 
 ```text
-Browser → POST /api/detect → Flask → POST batches → swimtrack-ai (GPU)
-Browser ← SSE por frame      ← Flask ← JSON por batch ← RT-DETRv2 + ByteTrack
+Browser → POST /api/detect → Flask → JPEG batches (`frames`) o video original (`video`) → swimtrack-ai (GPU)
+Browser ← SSE por frame      ← Flask ← JSON por batch (`frames`) o NDJSON (`video`) ← RT-DETRv2 + ByteTrack
 ```
 
 ## Ciclo de una detección
 
 1. Flask valida y guarda el video en un archivo temporal.
-2. `RemoteSwimmerDetector` abre el video con OpenCV y crea una sesión remota con `POST /v1/tracking-sessions`.
-3. El front conserva timestamps y dimensiones originales, pero muestrea el video hasta `VISION_MAX_FPS`, redimensiona cada frame seleccionado a 640×640 y lo comprime como JPEG para el transporte. El FPS muestreado se entrega a ByteTrack para conservar sus tiempos de retención.
-4. Los frames seleccionados se agrupan según `VISION_BATCH_SIZE` y se envían secuencialmente a `POST /v1/tracking-sessions/{session_id}/batches`.
-5. RT-DETRv2 procesa internamente los frames de a uno en esta primera versión y ByteTrack actualiza la misma sesión en orden.
+2. `RemoteSwimmerDetector` crea una sesión remota con `POST /v1/tracking-sessions`. En modo `video` sólo abre OpenCV para leer el FPS y lo cierra inmediatamente; no lee frames locales.
+3. En modo `frames`, el Front conserva timestamps y dimensiones originales, muestrea el video hasta `VISION_MAX_FPS`, redimensiona cada frame seleccionado a 640×640 y lo comprime como JPEG. El FPS muestreado se entrega a ByteTrack para conservar sus tiempos de retención.
+4. En modo `frames`, los frames seleccionados se agrupan según `VISION_BATCH_SIZE`. Un productor local puede preparar hasta `VISION_PREPARED_BATCH_QUEUE_SIZE` batches JPEG mientras el consumidor espera la respuesta anterior, pero los envía secuencialmente a `POST /v1/tracking-sessions/{session_id}/batches`.
+5. En modo `video`, el Front envía una vez el archivo original a `POST /v1/tracking-sessions/{session_id}/video` con el campo `sample_fps`. El servicio GPU hace decode y sampling, procesa los frames en orden y emite un `FrameResult` NDJSON por línea. Ese request no se reintenta: el endpoint avanza ByteTrack y todavía no expone un identificador idempotente equivalente a `batch_id`.
 6. Flask convierte `time_ms` a segundos, agrega el conteo acumulado de IDs y emite el evento SSE `{time,width,height,boxes,count,lap_scores?,tracking_diagnostics?,lap_decisions?}`. Un reducer local al request agrupa los candidatos por `(lane_id, candidate_episode_id)`, conserva el score máximo y, cuando hay un threshold configurado, publica a lo sumo una decisión shadow por episodio sin modificar `count`.
 7. Al terminar, fallar o desconectarse el navegador, Flask cierra la sesión remota y elimina el archivo temporal. El TTL del servicio IA cubre una caída total de red durante el cleanup.
 
@@ -52,6 +52,26 @@ Respuesta `200`:
 
 `width`, `height` y las bboxes siempre corresponden a las dimensiones originales, aunque el JPEG enviado mida 640×640.
 
+### Procesar video original (`VISION_TRANSPORT=video`)
+
+El request es `multipart/form-data`, con un campo `video` que contiene el archivo original y el campo de texto `sample_fps` calculado desde `VISION_MAX_FPS`:
+
+```http
+POST /v1/tracking-sessions/{session_id}/video
+Accept: application/x-ndjson
+
+video=<archivo original>
+sample_fps=15.0
+```
+
+La respuesta `200` usa `Content-Type: application/x-ndjson` y emite un objeto JSON completo por línea, siempre en orden creciente de `frame_index` y `time_ms`:
+
+```json
+{"frame_index":0,"time_ms":0.0,"width":1080,"height":1080,"boxes":[{"id":1,"x1":100.0,"y1":50.0,"x2":180.0,"y2":250.0,"conf":0.91,"class_id":0}]}
+```
+
+El Front valida el orden, normaliza la bbox y convierte `time_ms` a segundos antes de emitir SSE. Si se habilitan, `lap_scores` y `tracking_diagnostics` usan exactamente el mismo contrato que el transporte por batches.
+
 ### Cerrar sesión
 
 ```http
@@ -64,7 +84,7 @@ Respuesta `204`.
 
 Los batches de una sesión nunca se envían en paralelo porque ByteTrack depende del orden temporal. Ante un timeout o error transitorio, Flask reintenta con el mismo `batch_id`, `sequence`, metadata y bytes. El servicio IA debe devolver el resultado cacheado sin volver a avanzar el tracker. Un `batch_id` reutilizado con otro contenido o una secuencia fuera de orden produce `409` y no se reintenta.
 
-Se reintentan errores de transporte y HTTP `408`, `425`, `429`, `500`, `502`, `503` y `504`. Los demás errores se entregan al navegador como evento SSE `error`.
+En `frames` se reintentan errores de transporte y HTTP `408`, `425`, `429`, `500`, `502`, `503` y `504`. El upload NDJSON de `video` no se reintenta automáticamente porque una respuesta perdida podría haber avanzado el tracker. Los demás errores se entregan al navegador como evento SSE `error`.
 
 ## Configuración
 
@@ -74,7 +94,9 @@ Se reintentan errores de transporte y HTTP `408`, `425`, `429`, `500`, `502`, `5
 | `VISION_AUTH_TOKEN` | vacío | Token enviado en `X-Swimtrack-Auth`. |
 | `VISION_LAP_CALIBRATION_ID` | `fixed-camera-v1` | Calibración de perspectiva y carril solicitada al crear la sesión; vacío deshabilita el score. |
 | `VISION_TRACKING_DIAGNOSTICS` | `none` | Diagnostics de tracking por frame: `none`, `counts` o `boxes`; los dos últimos son opt-in para experimentos. |
+| `VISION_TRANSPORT` | `frames` | `frames` conserva el transporte JPEG idempotente; `video` envía el archivo original una vez y exige el endpoint NDJSON compatible de `swimtrack-ai`. |
 | `VISION_BATCH_SIZE` | `4` | Frames por request HTTP. Un batch menor reduce el tiempo hasta las primeras detecciones. |
+| `VISION_PREPARED_BATCH_QUEUE_SIZE` | `2` | Máximo de batches JPEG locales que esperan envío; acota la memoria y permite solapar encode con el request anterior. |
 | `VISION_MAX_FPS` | `15` | Límite de FPS analizados; los timestamps SSE siguen siendo los del video original. |
 | `VISION_INFERENCE_SIZE` | `640` | Ancho y alto del JPEG enviado. |
 | `VISION_JPEG_QUALITY` | `85` | Calidad JPEG de OpenCV. |
@@ -120,6 +142,7 @@ Configura el Front con la URL privada y exactamente el mismo token usado como `S
 ```dotenv
 VISION_BASE_URL=http://10.0.218.101:7001
 VISION_AUTH_TOKEN=<mismo-token-de-swimtrack-ai>
+VISION_TRANSPORT=video
 ```
 
 El despliegue no requiere privilegios de administrador. El servicio AI sigue ejecutándose como usuario y el token se transfiere por HTTP únicamente dentro de la red privada temporal. Si el Front y `swimtrack-ai` se ejecutan excepcionalmente en la misma máquina, puedes usar `VISION_BASE_URL=http://127.0.0.1:8001`.

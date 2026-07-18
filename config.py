@@ -25,7 +25,15 @@ class Config:
         "VISION_LAP_CALIBRATION_ID", "fixed-camera-v1"
     )
     VISION_TRACKING_DIAGNOSTICS = os.getenv("VISION_TRACKING_DIAGNOSTICS", "none")
+    # ``frames`` conserva el transporte JPEG; ``video`` delega decode y
+    # sampling al servicio GPU y reenvía el archivo original una sola vez.
+    VISION_TRANSPORT = os.getenv("VISION_TRANSPORT", "frames")
     VISION_BATCH_SIZE = int(os.getenv("VISION_BATCH_SIZE", "4"))
+    # Batches JPEG que se pueden preparar mientras el request anterior espera
+    # a la GPU. Mantenerlo pequeño limita memoria y conserva backpressure.
+    VISION_PREPARED_BATCH_QUEUE_SIZE = int(
+        os.getenv("VISION_PREPARED_BATCH_QUEUE_SIZE", "2")
+    )
     VISION_MAX_FPS = float(os.getenv("VISION_MAX_FPS", "15"))
     VISION_INFERENCE_SIZE = int(os.getenv("VISION_INFERENCE_SIZE", "640"))
     VISION_JPEG_QUALITY = int(os.getenv("VISION_JPEG_QUALITY", "85"))
