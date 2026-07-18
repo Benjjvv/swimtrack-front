@@ -251,6 +251,37 @@ test('renders using presented mediaTime and interpolates a stable tracked box', 
   await started;
 });
 
+test('keeps rendering after a loop when video frame callbacks do not resume', async () => {
+  const video = new FrameCallbackVideo();
+  const canvas = fakeCanvas();
+  const playback = new ControlledPlayback(video, canvas);
+
+  const started = playback.start('blob:video', {}, '/api/detect');
+  await playback.streamStarted.promise;
+  playback._ingestEvent(`data: ${JSON.stringify(emptyFrame(0))}`);
+  playback._ingestEvent(`data: ${JSON.stringify(frame(0.1))}`);
+  playback._ingestEvent(`data: ${JSON.stringify(frame(2))}`);
+  await flush();
+
+  // La última detección no puede ser más antigua que la ventana de persistencia.
+  video.present(1.4);
+  assert.equal(canvas.context.strokeCalls, 1);
+
+  // Simula el loop: el seek a cero muestra un frame vacío y el navegador no
+  // entrega el siguiente requestVideoFrameCallback. Los timeupdate posteriores
+  // deben mantener el overlay vivo como fallback.
+  video.currentTime = 0;
+  video.emit('seeked');
+  video.currentTime = 0.1;
+  video.emit('timeupdate');
+
+  assert.equal(canvas.context.strokeCalls, 2);
+
+  playback.stop();
+  playback.streamGate.resolve();
+  await started;
+});
+
 test('adapts the resume target to slow SSE arrivals and reports rebuffer telemetry', async () => {
   const video = new FakeVideo();
   const canvas = fakeCanvas();

@@ -148,10 +148,13 @@ export class DetectionPlayback {
     // como fallback para navegadores sin ese API.
     this._usesVideoFrameCallback = typeof this.video.requestVideoFrameCallback === 'function';
     this._onTimeUpdate = () => {
-      if (!this._usesVideoFrameCallback || this.video.paused) {
-        this._renderCurrent();
-        this._pauseIfBufferRunsDry();
-      }
+      // ``requestVideoFrameCallback`` corrige el dibujo con el timestamp exacto
+      // del compositor. ``timeupdate`` sigue siendo un fallback de recuperación:
+      // algunos navegadores pueden perder esa cadena de callbacks al reiniciar
+      // un video en loop. Sin este render, un frame vacío en t=0 limpia el canvas
+      // y las cajas no regresan hasta que vuelva a llegar un callback de video.
+      this._renderCurrent();
+      this._pauseIfBufferRunsDry();
     };
     this.video.addEventListener('timeupdate', this._onTimeUpdate);
     this._onSeeked = () => {
