@@ -90,6 +90,10 @@ function frame(time) {
   };
 }
 
+function emptyFrame(time) {
+  return { ...frame(time), boxes: [] };
+}
+
 class ControlledPlayback extends DetectionPlayback {
   constructor(...args) {
     super(...args);
@@ -151,7 +155,7 @@ test('starts the SSE stream before playing and buffers detections before playbac
   await started;
 });
 
-test('clears the overlay instead of drawing a stale frame past the SSE buffer', () => {
+test('keeps the most recent boxes through short empty or delayed detection gaps', () => {
   const video = new FakeVideo();
   const canvas = fakeCanvas();
   const playback = new DetectionPlayback(video, canvas);
@@ -160,8 +164,19 @@ test('clears the overlay instead of drawing a stale frame past the SSE buffer', 
   video.currentTime = 0.5;
   playback._renderCurrent();
 
-  assert.equal(canvas.context.strokeCalls, 0);
-  assert.equal(canvas.context.clearCalls, 1);
+  assert.equal(canvas.context.strokeCalls, 1);
+
+  playback.frames.push(emptyFrame(0.6));
+  assert.equal(playback._frameAt(1.1).time, 0);
+
+  video.currentTime = 1.1;
+  playback._renderCurrent();
+  assert.equal(canvas.context.strokeCalls, 2);
+
+  assert.equal(playback._frameAt(1.6).time, 0.6);
+
+  playback.frames = [frame(0)];
+  assert.equal(playback._frameAt(1.6), null);
 });
 
 test('reports an empty completed stream instead of waiting forever', async () => {

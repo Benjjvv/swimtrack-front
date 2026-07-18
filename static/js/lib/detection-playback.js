@@ -16,6 +16,10 @@ import { drawDetections, clearCanvas } from './detection.js';
 const INITIAL_BUFFER_SECONDS = 2;
 const PAUSE_BUFFER_SECONDS = 0.25;
 const RESUME_BUFFER_SECONDS = 0.75;
+// Un frame vacío de la IA no debe hacer desaparecer las cajas de inmediato.
+// Mantenemos la última detección reciente, pero acotamos su antigüedad para no
+// dejar una posición congelada durante una oclusión prolongada.
+const DETECTION_PERSISTENCE_SECONDS = 1.5;
 
 /**
  * Caja del contrato -> formato de drawDetections, mapeada al MISMO recorte que
@@ -320,14 +324,30 @@ export class DetectionPlayback {
     this.onCount(this._maxCount);
   }
 
-  /** Último frame recibido cuyo `time` ya pasó; nunca usa un frame futuro o vencido. */
+  /** Última detección con cajas que no sea futura para el instante indicado. */
+  _lastDetectionAtOrBefore(t) {
+    for (let index = this.frames.length - 1; index >= 0; index -= 1) {
+      const frame = this.frames[index];
+      if (frame.time > t) continue;
+      if (Array.isArray(frame.boxes) && frame.boxes.length > 0) return frame;
+    }
+    return null;
+  }
+
+  /** Frame sincronizado, conservando cajas recientes ante un vacío breve de detección. */
   _frameAt(t) {
-    const latest = this._latestFrameTime();
-    if (latest === null || (!this._streamDone && t > latest)) return null;
     let match = null;
     for (const f of this.frames) {
       if (f.time <= t) match = f;
       else break;
+    }
+    if (match && Array.isArray(match.boxes) && match.boxes.length > 0) {
+      return t - match.time <= DETECTION_PERSISTENCE_SECONDS ? match : null;
+    }
+
+    const lastDetection = this._lastDetectionAtOrBefore(t);
+    if (lastDetection && t - lastDetection.time <= DETECTION_PERSISTENCE_SECONDS) {
+      return lastDetection;
     }
     return match;
   }
