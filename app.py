@@ -174,6 +174,7 @@ def create_app(config_overrides=None, detector=None):
     app.config.from_object(get_config())
     if config_overrides:
         app.config.update(config_overrides)
+    app.logger.setLevel(logging.INFO)
 
     lap_episode_mode = app.config.get("LAP_EPISODE_MODE", "shadow")
     if not isinstance(lap_episode_mode, str):
@@ -191,7 +192,7 @@ def create_app(config_overrides=None, detector=None):
     app.extensions["swimmer_detector"] = (
         detector
         if detector is not None
-        else RemoteSwimmerDetector.from_flask_config(app.config)
+        else RemoteSwimmerDetector.from_flask_config(app.config, logger=app.logger)
     )
 
     # En producción (URL_PREFIX != "/") montamos la app bajo el subpath de Apache.

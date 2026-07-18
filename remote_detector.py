@@ -22,7 +22,7 @@ import httpx
 
 
 _RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
-logger = logging.getLogger(__name__)
+_LOGGER = logging.getLogger(__name__)
 
 
 class RemoteDetectorError(RuntimeError):
@@ -77,6 +77,7 @@ class RemoteSwimmerDetector:
         client_factory: Callable[..., httpx.Client] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         uuid_factory: Callable[[], uuid.UUID] = uuid.uuid4,
+        logger: logging.Logger | None = None,
     ) -> None:
         if not base_url.strip():
             raise ValueError("VISION_BASE_URL no puede estar vacío.")
@@ -121,6 +122,7 @@ class RemoteSwimmerDetector:
         self._client_factory = client_factory or httpx.Client
         self._sleep = sleep
         self._uuid_factory = uuid_factory
+        self._logger = logger or _LOGGER
         self._timeout = httpx.Timeout(
             read_timeout,
             connect=connect_timeout,
@@ -130,7 +132,9 @@ class RemoteSwimmerDetector:
         )
 
     @classmethod
-    def from_flask_config(cls, config: dict[str, Any]) -> "RemoteSwimmerDetector":
+    def from_flask_config(
+        cls, config: dict[str, Any], *, logger: logging.Logger | None = None
+    ) -> "RemoteSwimmerDetector":
         """Construye el adaptador desde ``app.config``."""
         return cls(
             base_url=config["VISION_BASE_URL"],
@@ -149,6 +153,7 @@ class RemoteSwimmerDetector:
             max_retries=int(config["VISION_MAX_RETRIES"]),
             retry_backoff_seconds=float(config["VISION_RETRY_BACKOFF_SECONDS"]),
             fallback_fps=float(config["VISION_FALLBACK_FPS"]),
+            logger=logger,
         )
 
     def stream(self, video_path: str) -> Iterator[dict[str, Any]]:
@@ -164,7 +169,7 @@ class RemoteSwimmerDetector:
 
         sample_stride = max(1, math.ceil(fps / self.max_fps))
         tracking_fps = fps / sample_stride
-        logger.info(
+        self._logger.info(
             "vision_stream_sampling source_fps=%.3f sampled_fps=%.3f stride=%d",
             fps,
             tracking_fps,
@@ -365,7 +370,7 @@ class RemoteSwimmerDetector:
             value = self._response_timing(response, header)
             return "unavailable" if value is None else f"{value:.1f}"
 
-        logger.info(
+        self._logger.info(
             "vision_batch_timing sequence=%d frames=%d frame_range=%d-%d attempts=%d "
             "roundtrip_ms=%.1f ai_decode_ms=%s ai_process_ms=%s ai_total_ms=%s",
             sequence,
