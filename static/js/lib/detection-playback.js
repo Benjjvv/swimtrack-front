@@ -11,6 +11,12 @@
 
 import { drawDetections, clearCanvas } from './detection.js';
 
+// El video no debe alcanzar al stream SSE: esperamos esta ventaja antes de
+// iniciar y volvemos a pausar si la inferencia queda demasiado atrás.
+const INITIAL_BUFFER_SECONDS = 1;
+const PAUSE_BUFFER_SECONDS = 0.25;
+const RESUME_BUFFER_SECONDS = 0.75;
+
 /**
  * Caja del contrato -> formato de drawDetections, mapeada al MISMO recorte que
  * hace `object-fit: cover` del <video>: escala uniforme + offset de centrado.
@@ -53,18 +59,30 @@ export class DetectionPlayback {
     this._abort = null;
     /** Máximo count visto en esta pasada; el contador no baja por el loop. (F9) */
     this._maxCount = 0;
+    /** Identifica la reproducción activa para ignorar callbacks de un video detenido. */
+    this._runId = 0;
+    this._streamDone = false;
+    this._playStarted = false;
+    this._buffering = false;
+    this._initialBufferWaiter = null;
+    this._resumePromise = null;
   }
 
   /**
-   * Reproduce el video y le pide al back las detecciones (SSE) para dibujarlas.
+   * Empieza a recibir SSE, junta una ventaja inicial y recién entonces reproduce.
    * @param {string} videoUrl  URL.createObjectURL del archivo subido (para <video>).
    * @param {File}   file      el mismo video, para subirlo a /api/detect.
    * @param {string} detectUrl URL del endpoint de detección (subpath-safe).
    */
   async start(videoUrl, file, detectUrl) {
     this.stop();
+    const runId = ++this._runId;
     this.frames = [];
     this._maxCount = 0; // contador arranca de cero con cada video nuevo
+    this._streamDone = false;
+    this._playStarted = false;
+    this._buffering = true;
+    this._resumePromise = null;
 
     this.video.srcObject = null; // por si venía de la cámara
     this.video.src = videoUrl;
@@ -72,24 +90,57 @@ export class DetectionPlayback {
 
     // Redibujar el frame actual en cada timeupdate Y al cambiar de tamaño
     // (resize de ventana, colapso de sidebar), no solo mientras reproduce. (F4)
-    this._onTimeUpdate = () => this._renderCurrent();
+    this._onTimeUpdate = () => {
+      this._renderCurrent();
+      this._pauseIfBufferRunsDry();
+    };
     this.video.addEventListener('timeupdate', this._onTimeUpdate);
     this._resizeObs = new ResizeObserver(() => this._renderCurrent());
     this._resizeObs.observe(this.video);
 
-    await this.video.play();
-    if (!this._onTimeUpdate) return; // stop() canceló mientras cargaba el video
+    // Iniciar el POST antes de reproducir evita perder un ciclo completo del
+    // video mientras Flask recibe el upload y la GPU produce el primer batch.
+    const initialBuffer = this._waitForInitialBuffer(runId);
+    const stream = this._streamDetections(file, detectUrl, runId);
+    stream.then(
+      () => this._completeStream(runId),
+      (error) => this._failInitialBuffer(runId, error),
+    );
 
-    await this._streamDetections(file, detectUrl);
+    try {
+      await initialBuffer;
+      if (!this._isActive(runId)) return; // stop() canceló mientras esperaba
+
+      await this.video.play();
+      if (!this._isActive(runId)) {
+        this.video.pause();
+        return;
+      }
+
+      this._playStarted = true;
+      this._buffering = false;
+      this._renderCurrent();
+
+      await stream;
+    } finally {
+      if (this._isActive(runId)) {
+        // Si play() falla o el stream terminó con error, no dejamos un POST
+        // leyendo en segundo plano después de que el panel se restablezca.
+        if (!this._streamDone && this._abort) this._abort.abort();
+        this._streamDone = true;
+        this._abort = null;
+      }
+    }
   }
 
   /** POST del video a /api/detect y consumo incremental del SSE (acumula frames). */
-  async _streamDetections(file, detectUrl) {
+  async _streamDetections(file, detectUrl, runId) {
     const form = new FormData();
     form.append('video', file); // el back lo lee como request.files['video']
-    this._abort = new AbortController();
+    const abort = new AbortController();
+    this._abort = abort;
     try {
-      const res = await fetch(detectUrl, { method: 'POST', body: form, signal: this._abort.signal });
+      const res = await fetch(detectUrl, { method: 'POST', body: form, signal: abort.signal });
       if (!res.ok || !res.body) {
         throw new Error('El servidor de detección respondió ' + res.status + '.');
       }
@@ -99,14 +150,15 @@ export class DetectionPlayback {
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
+        if (!this._isActive(runId)) return;
         buffer += decoder.decode(value, { stream: true });
         let sep;
         while ((sep = buffer.indexOf('\n\n')) !== -1) {
-          this._ingestEvent(buffer.slice(0, sep));
+          this._ingestEvent(buffer.slice(0, sep), runId);
           buffer = buffer.slice(sep + 2);
         }
       }
-      if (buffer.trim()) this._ingestEvent(buffer); // último evento sin "\n\n"
+      if (buffer.trim() && this._isActive(runId)) this._ingestEvent(buffer, runId); // último evento sin "\n\n"
     } catch (err) {
       if (err && err.name === 'AbortError') return; // stop() canceló: es normal
       throw err;
@@ -117,7 +169,8 @@ export class DetectionPlayback {
    * Parsea un evento SSE. Si es `event: error` (la IA falló a mitad), lanza para
    * que el panel lo muestre; si no, acumula el frame del contrato. (F2)
    */
-  _ingestEvent(raw) {
+  _ingestEvent(raw, runId = this._runId) {
+    if (!this._isActive(runId)) return;
     let event = 'message';
     const dataLines = [];
     for (const line of raw.split('\n')) {
@@ -131,17 +184,111 @@ export class DetectionPlayback {
       try { msg = JSON.parse(data).error || msg; } catch (_e) { /* usa el default */ }
       throw new Error(msg);
     }
+    let frame;
     try {
-      this.frames.push(JSON.parse(data)); // {time,width,height,boxes,count}
+      frame = JSON.parse(data);
     } catch (_e) {
       // keepalive/comentario u otro evento no-JSON: lo ignoramos.
+      return;
     }
+    this.frames.push(frame); // {time,width,height,boxes,count}
+    this._settleInitialBuffer();
+    this._renderCurrent();
+    this._resumeIfBuffered(runId);
+  }
+
+  /** Espera la ventaja inicial o el final de un video más corto que el margen. */
+  _waitForInitialBuffer(runId) {
+    return new Promise((resolve, reject) => {
+      this._initialBufferWaiter = { runId, resolve, reject };
+      this._settleInitialBuffer();
+    });
+  }
+
+  _settleInitialBuffer() {
+    const waiter = this._initialBufferWaiter;
+    if (!waiter) return;
+    if (!this._isActive(waiter.runId)) {
+      this._initialBufferWaiter = null;
+      waiter.resolve();
+      return;
+    }
+    if (this._streamDone && !this.frames.length) {
+      this._initialBufferWaiter = null;
+      waiter.reject(new Error('El servidor de detección no emitió frames.'));
+      return;
+    }
+    if (!this.frames.length || (!this._streamDone && this._bufferAhead() < INITIAL_BUFFER_SECONDS)) {
+      return;
+    }
+    this._initialBufferWaiter = null;
+    waiter.resolve();
+  }
+
+  _completeStream(runId) {
+    if (!this._isActive(runId)) return;
+    this._streamDone = true;
+    this._settleInitialBuffer();
+    this._renderCurrent();
+    this._resumeIfBuffered(runId);
+  }
+
+  _failInitialBuffer(runId, error) {
+    if (!this._isActive(runId)) return;
+    const waiter = this._initialBufferWaiter;
+    if (!waiter || waiter.runId !== runId) return;
+    this._initialBufferWaiter = null;
+    waiter.reject(error);
+  }
+
+  _isActive(runId) {
+    return this._runId === runId && this._onTimeUpdate !== null;
+  }
+
+  _latestFrameTime() {
+    const frame = this.frames[this.frames.length - 1];
+    return frame && Number.isFinite(frame.time) ? frame.time : null;
+  }
+
+  _bufferAhead() {
+    const latest = this._latestFrameTime();
+    return latest === null ? Number.NEGATIVE_INFINITY : latest - this.video.currentTime;
+  }
+
+  _pauseIfBufferRunsDry() {
+    if (!this._playStarted || this._streamDone || this._buffering) return;
+    if (this._bufferAhead() >= PAUSE_BUFFER_SECONDS) return;
+    this._buffering = true;
+    this.video.pause();
+  }
+
+  _resumeIfBuffered(runId) {
+    if (!this._isActive(runId) || !this._playStarted || !this._buffering || this._resumePromise) {
+      return;
+    }
+    if (!this._streamDone && this._bufferAhead() < RESUME_BUFFER_SECONDS) return;
+
+    this._resumePromise = this.video.play()
+      .then(() => {
+        if (!this._isActive(runId)) return;
+        this._buffering = false;
+        this._renderCurrent();
+      })
+      .catch(() => {
+        // El video está muted; un rechazo es excepcional. Conservamos el estado
+        // pausado para no avanzar sin detecciones mientras el usuario reintenta.
+        if (this._isActive(runId)) this._buffering = true;
+      })
+      .finally(() => {
+        if (this._isActive(runId)) this._resumePromise = null;
+      });
   }
 
   /** Dibuja el frame que corresponde al video.currentTime actual. */
   _renderCurrent() {
     const frame = this._frameAt(this.video.currentTime);
     if (frame) this._render(frame);
+    else clearCanvas(this.canvas);
   }
 
   /** Mapea las cajas al recorte de object-fit: cover del <video> y las dibuja. */
@@ -164,18 +311,30 @@ export class DetectionPlayback {
     this.onCount(this._maxCount);
   }
 
-  /** Último frame cuyo `time` ya pasó (los frames llegan ordenados por time). */
+  /** Último frame recibido cuyo `time` ya pasó; nunca usa un frame futuro o vencido. */
   _frameAt(t) {
+    const latest = this._latestFrameTime();
+    if (latest === null || (!this._streamDone && t > latest)) return null;
     let match = null;
     for (const f of this.frames) {
       if (f.time <= t) match = f;
       else break;
     }
-    return match || this.frames[0] || null;
+    return match;
   }
 
   /** Cancela el stream, quita listeners y limpia el canvas. */
   stop() {
+    this._runId += 1;
+    if (this._initialBufferWaiter) {
+      const waiter = this._initialBufferWaiter;
+      this._initialBufferWaiter = null;
+      waiter.resolve();
+    }
+    this._streamDone = false;
+    this._playStarted = false;
+    this._buffering = false;
+    this._resumePromise = null;
     if (this._abort) {
       this._abort.abort();
       this._abort = null;

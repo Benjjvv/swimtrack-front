@@ -70,6 +70,7 @@ En la VM temporal del proyecto, `swimtrack-ai` se ejecuta nativamente con `uv` e
 ```bash
 uv run --with-requirements requirements.txt --with pytest python -m pytest -q
 uv run --with ruff ruff check .
+node tests/detection-playback.test.mjs
 ```
 
 ## API
