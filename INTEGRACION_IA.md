@@ -97,7 +97,7 @@ En `frames` se reintentan errores de transporte y HTTP `408`, `425`, `429`, `500
 | `VISION_TRANSPORT` | `frames` | `frames` conserva el transporte JPEG idempotente; `video` envía el archivo original una vez y exige el endpoint NDJSON compatible de `swimtrack-ai`. |
 | `VISION_BATCH_SIZE` | `4` | Frames por request HTTP. Un batch menor reduce el tiempo hasta las primeras detecciones. |
 | `VISION_PREPARED_BATCH_QUEUE_SIZE` | `2` | Máximo de batches JPEG locales que esperan envío; acota la memoria y permite solapar encode con el request anterior. |
-| `VISION_MAX_FPS` | `15` | Límite de FPS analizados; los timestamps SSE siguen siendo los del video original. |
+| `VISION_MAX_FPS` | `30` | Límite de FPS analizados; los timestamps SSE siguen siendo los del video original. |
 | `VISION_INFERENCE_SIZE` | `640` | Ancho y alto del JPEG enviado. |
 | `VISION_JPEG_QUALITY` | `85` | Calidad JPEG de OpenCV. |
 | `VISION_CONNECT_TIMEOUT` | `5` | Timeout de conexión en segundos. |

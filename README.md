@@ -51,7 +51,7 @@ Abrir <http://localhost:7001>.
 | `VISION_TRANSPORT` | `frames` (default) conserva el envío JPEG idempotente; `video` retransmite el archivo original una vez a `/v1/tracking-sessions/{session_id}/video` y recibe NDJSON. Actívalo sólo junto con la versión compatible de `swimtrack-ai`. |
 | `VISION_BATCH_SIZE` | Cantidad de frames JPEG enviados por request; default `4`. |
 | `VISION_PREPARED_BATCH_QUEUE_SIZE` | Batches JPEG preparados localmente mientras el request anterior espera la GPU; default `2`, siempre con un único request ordenado en vuelo. |
-| `VISION_MAX_FPS` | Máximo de FPS que se analizan desde un video subido; default `15`, con timestamps originales. |
+| `VISION_MAX_FPS` | Máximo de FPS que se analizan desde un video subido; default `30`, con timestamps originales. |
 | `VISION_INFERENCE_SIZE` | Resolución cuadrada enviada al modelo; default `640`. |
 | `VISION_JPEG_QUALITY` | Calidad de compresión de los frames; default `85`. |
 | `VISION_*_TIMEOUT` | Timeouts de conexión, lectura, escritura y pool. |

@@ -114,7 +114,7 @@ class RemoteSwimmerDetector:
         transport: Literal["frames", "video"] = "frames",
         batch_size: int = 4,
         prepared_batch_queue_size: int = 2,
-        max_fps: float = 15.0,
+        max_fps: float = 30.0,
         inference_size: int = 640,
         jpeg_quality: int = 85,
         connect_timeout: float = 5.0,

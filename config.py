@@ -34,7 +34,7 @@ class Config:
     VISION_PREPARED_BATCH_QUEUE_SIZE = int(
         os.getenv("VISION_PREPARED_BATCH_QUEUE_SIZE", "2")
     )
-    VISION_MAX_FPS = float(os.getenv("VISION_MAX_FPS", "15"))
+    VISION_MAX_FPS = float(os.getenv("VISION_MAX_FPS", "30"))
     VISION_INFERENCE_SIZE = int(os.getenv("VISION_INFERENCE_SIZE", "640"))
     VISION_JPEG_QUALITY = int(os.getenv("VISION_JPEG_QUALITY", "85"))
     VISION_CONNECT_TIMEOUT = float(os.getenv("VISION_CONNECT_TIMEOUT", "5"))
