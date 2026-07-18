@@ -10,9 +10,6 @@ env/
 .DS_Store
 *.log
 instance/
-node_modules/
-playwright-report/
-test-results/
 
 # Instrucciones locales para Claude Code — no van al repo
 CLAUDE.md
