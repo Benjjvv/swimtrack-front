@@ -72,6 +72,10 @@ La respuesta `200` usa `Content-Type: application/x-ndjson` y emite un objeto JS
 
 El Front valida el orden, normaliza la bbox y convierte `time_ms` a segundos antes de emitir SSE. Si se habilitan, `lap_scores` y `tracking_diagnostics` usan exactamente el mismo contrato que el transporte por batches.
 
+### Diagnostics de tracking
+
+Con `diagnostics=counts` o `diagnostics=boxes` al crear la sesión, cada `tracking_diagnostics` incluye `diagnostic_floor`, los grupos `{count,boxes?}` `person_candidates`, `detector_accepted` y `weak_candidates`, y un elemento por carril. Cada carril incluye los grupos `after_roi` y `weak_candidates_after_roi`, `active_track_ids`, `retained_lost_track_count` y `weak_reactivated_track_ids`. El último campo declara las identidades perdidas que se reactivaron con un candidato débil en ese frame; no representa una identidad nueva. En modo `counts` se omite `boxes`; en modo `boxes`, su longitud siempre coincide con `count`.
+
 ### Cerrar sesión
 
 ```http

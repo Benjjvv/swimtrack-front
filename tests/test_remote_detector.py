@@ -451,6 +451,47 @@ def test_video_transport_uploads_original_once_and_streams_ndjson(
     assert client.closed
 
 
+def test_video_transport_forwards_weak_tracking_diagnostics(monkeypatch, tmp_path):
+    video_path = tmp_path / "sample.mp4"
+    video_path.write_bytes(b"original-compressed-video")
+    diagnostics = {
+        "diagnostic_floor": 0.1,
+        "person_candidates": {"count": 1},
+        "detector_accepted": {"count": 0},
+        "weak_candidates": {"count": 1},
+        "lanes": [
+            {
+                "lane_id": "center",
+                "after_roi": {"count": 0},
+                "weak_candidates_after_roi": {"count": 1},
+                "active_track_ids": [],
+                "retained_lost_track_count": 1,
+                "weak_reactivated_track_ids": [7],
+            }
+        ],
+    }
+    detector, _capture, _client = _build_detector(
+        monkeypatch,
+        transport="video",
+        video_lines=[
+            json.dumps(
+                {
+                    "frame_index": 0,
+                    "time_ms": 0.0,
+                    "width": 1920,
+                    "height": 1080,
+                    "boxes": [],
+                    "tracking_diagnostics": diagnostics,
+                }
+            )
+        ],
+    )
+
+    results = list(detector.stream(str(video_path)))
+
+    assert results[0]["tracking_diagnostics"] == diagnostics
+
+
 def test_video_transport_rejects_out_of_order_ndjson_and_cleans_up(
     monkeypatch, tmp_path
 ):
@@ -589,6 +630,10 @@ def test_stream_requests_and_forwards_tracking_diagnostics(monkeypatch):
             "count": 1,
             "boxes": [{"x1": 3, "y1": 4, "x2": 13, "y2": 14, "conf": 0.8}],
         },
+        "weak_candidates": {
+            "count": 1,
+            "boxes": [{"x1": 1, "y1": 2, "x2": 10, "y2": 12, "conf": 0.14}],
+        },
         "lanes": [
             {
                 "lane_id": "center",
@@ -596,8 +641,13 @@ def test_stream_requests_and_forwards_tracking_diagnostics(monkeypatch):
                     "count": 1,
                     "boxes": [{"x1": 3, "y1": 4, "x2": 13, "y2": 14, "conf": 0.8}],
                 },
+                "weak_candidates_after_roi": {
+                    "count": 1,
+                    "boxes": [{"x1": 1, "y1": 2, "x2": 10, "y2": 12, "conf": 0.14}],
+                },
                 "active_track_ids": [7],
                 "retained_lost_track_count": 2,
+                "weak_reactivated_track_ids": [7],
             }
         ],
     }
@@ -620,6 +670,18 @@ def test_stream_requests_and_forwards_tracking_diagnostics(monkeypatch):
         "y2": 12.0,
         "conf": 0.14,
     }
+    assert forwarded["weak_candidates"] == {
+        "count": 1,
+        "boxes": [
+            {
+                "x1": 1.0,
+                "y1": 2.0,
+                "x2": 10.0,
+                "y2": 12.0,
+                "conf": 0.14,
+            }
+        ],
+    }
     assert forwarded["lanes"] == [
         {
             "lane_id": "center",
@@ -635,8 +697,21 @@ def test_stream_requests_and_forwards_tracking_diagnostics(monkeypatch):
                     }
                 ],
             },
+            "weak_candidates_after_roi": {
+                "count": 1,
+                "boxes": [
+                    {
+                        "x1": 1.0,
+                        "y1": 2.0,
+                        "x2": 10.0,
+                        "y2": 12.0,
+                        "conf": 0.14,
+                    }
+                ],
+            },
             "active_track_ids": [7],
             "retained_lost_track_count": 2,
+            "weak_reactivated_track_ids": [7],
         }
     ]
 
@@ -649,12 +724,15 @@ def test_stream_rejects_malformed_tracking_diagnostics(monkeypatch):
             "diagnostic_floor": 0.1,
             "person_candidates": {"count": 1},
             "detector_accepted": {"count": 1},
+            "weak_candidates": {"count": 1},
             "lanes": [
                 {
                     "lane_id": "center",
                     "after_roi": {"count": 1},
+                    "weak_candidates_after_roi": {"count": 1},
                     "active_track_ids": "7",
                     "retained_lost_track_count": 0,
+                    "weak_reactivated_track_ids": [],
                 }
             ],
         },
@@ -664,6 +742,74 @@ def test_stream_rejects_malformed_tracking_diagnostics(monkeypatch):
         remote_detector.RemoteDetectorError,
         match="active_track_ids inválidos",
     ):
+        list(detector.stream("video.mp4"))
+
+    assert capture.released
+    assert client.closed
+    assert client.deleted == ["http://vision.test/v1/tracking-sessions/session-1"]
+
+
+@pytest.mark.parametrize(
+    ("diagnostics", "error"),
+    [
+        (
+            {
+                "diagnostic_floor": 0.1,
+                "person_candidates": {"count": 1},
+                "detector_accepted": {"count": 1},
+                "lanes": [],
+            },
+            "tracking_diagnostics incompletos",
+        ),
+        (
+            {
+                "diagnostic_floor": 0.1,
+                "person_candidates": {"count": 1},
+                "detector_accepted": {"count": 1},
+                "weak_candidates": {"count": 1},
+                "lanes": [
+                    {
+                        "lane_id": "center",
+                        "after_roi": {"count": 1},
+                        "active_track_ids": [],
+                        "retained_lost_track_count": 0,
+                        "weak_reactivated_track_ids": [],
+                    }
+                ],
+            },
+            "diagnostics de carril incompletos",
+        ),
+        (
+            {
+                "diagnostic_floor": 0.1,
+                "person_candidates": {"count": 1},
+                "detector_accepted": {"count": 1},
+                "weak_candidates": {"count": 1},
+                "lanes": [
+                    {
+                        "lane_id": "center",
+                        "after_roi": {"count": 1},
+                        "weak_candidates_after_roi": {"count": 1},
+                        "active_track_ids": [],
+                        "retained_lost_track_count": 0,
+                        "weak_reactivated_track_ids": [True],
+                    }
+                ],
+            },
+            "weak_reactivated_track_ids inválidos",
+        ),
+    ],
+)
+def test_stream_rejects_malformed_weak_tracking_diagnostics(
+    monkeypatch, diagnostics, error
+):
+    detector, capture, client = _build_detector(
+        monkeypatch,
+        tracking_diagnostics="counts",
+        tracking_diagnostics_payload=diagnostics,
+    )
+
+    with pytest.raises(remote_detector.RemoteDetectorError, match=error):
         list(detector.stream("video.mp4"))
 
     assert capture.released

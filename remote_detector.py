@@ -1146,6 +1146,7 @@ class RemoteSwimmerDetector:
             "diagnostic_floor",
             "person_candidates",
             "detector_accepted",
+            "weak_candidates",
             "lanes",
         )
         if any(field not in diagnostics for field in required):
@@ -1178,6 +1179,9 @@ class RemoteSwimmerDetector:
             "detector_accepted": cls._normalize_diagnostic_group(
                 diagnostics["detector_accepted"], "detector_accepted"
             ),
+            "weak_candidates": cls._normalize_diagnostic_group(
+                diagnostics["weak_candidates"], "weak_candidates"
+            ),
             "lanes": [cls._normalize_lane_diagnostics(lane) for lane in lanes],
         }
 
@@ -1190,8 +1194,10 @@ class RemoteSwimmerDetector:
         required = (
             "lane_id",
             "after_roi",
+            "weak_candidates_after_roi",
             "active_track_ids",
             "retained_lost_track_count",
+            "weak_reactivated_track_ids",
         )
         if any(field not in lane for field in required):
             raise RemoteDetectorError(
@@ -1209,6 +1215,13 @@ class RemoteSwimmerDetector:
             raise RemoteDetectorError(
                 "La respuesta IA contiene active_track_ids inválidos."
             )
+        weak_reactivated_track_ids = lane["weak_reactivated_track_ids"]
+        if not isinstance(weak_reactivated_track_ids, list) or any(
+            not cls._is_integer(track_id) for track_id in weak_reactivated_track_ids
+        ):
+            raise RemoteDetectorError(
+                "La respuesta IA contiene weak_reactivated_track_ids inválidos."
+            )
         retained_lost_track_count = lane["retained_lost_track_count"]
         if (
             not cls._is_integer(retained_lost_track_count)
@@ -1223,8 +1236,14 @@ class RemoteSwimmerDetector:
             "after_roi": cls._normalize_diagnostic_group(
                 lane["after_roi"], "after_roi"
             ),
+            "weak_candidates_after_roi": cls._normalize_diagnostic_group(
+                lane["weak_candidates_after_roi"], "weak_candidates_after_roi"
+            ),
             "active_track_ids": [int(track_id) for track_id in active_track_ids],
             "retained_lost_track_count": int(retained_lost_track_count),
+            "weak_reactivated_track_ids": [
+                int(track_id) for track_id in weak_reactivated_track_ids
+            ],
         }
 
     @classmethod
