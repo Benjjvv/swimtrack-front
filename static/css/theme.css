@@ -67,7 +67,9 @@ code, pre, .st-mono {
 }
 
 .st-app.sidebar-collapsed .st-brand-name,
-.st-app.sidebar-collapsed .st-nav-link span {
+.st-app.sidebar-collapsed .st-nav-link span,
+.st-app.sidebar-collapsed .st-debug-toggle span,
+.st-app.sidebar-collapsed .st-debug-chevron {
   display: none;
 }
 
@@ -116,6 +118,76 @@ code, pre, .st-mono {
 .st-nav-link.active {
   background: var(--st-bg-elev);
   color: var(--st-primary);
+}
+
+.st-debug-menu {
+  margin-top: 0.25rem;
+  padding-top: 0.25rem;
+  border-top: 1px solid var(--st-border);
+}
+
+.st-debug-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--st-text-muted);
+  font: inherit;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.st-debug-toggle:hover {
+  background: var(--st-bg-elev);
+  color: var(--st-text);
+}
+
+.st-debug-toggle > i:first-child {
+  font-size: 1.1rem;
+  min-width: 1.1rem;
+}
+
+.st-debug-chevron {
+  margin-left: auto;
+  font-size: 0.75rem;
+  transition: transform 0.15s ease;
+}
+
+.st-debug-toggle[aria-expanded="true"] .st-debug-chevron {
+  transform: rotate(180deg);
+}
+
+.st-debug-options {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0.1rem 0.25rem 0.5rem 2.35rem;
+  padding: 0.55rem;
+  border: 1px solid var(--st-border);
+  border-radius: 6px;
+  background: var(--st-bg-elev);
+}
+
+.st-debug-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--st-text-muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.st-debug-option input {
+  margin: 0;
+  accent-color: var(--st-primary);
+}
+
+.st-app.sidebar-collapsed .st-debug-options:not([hidden]) {
+  display: none !important;
 }
 
 /* ===== Main ===== */
@@ -243,8 +315,14 @@ code, pre, .st-mono {
     width: var(--st-sidebar-w);
   }
   .st-app.sidebar-collapsed .st-brand-name,
-  .st-app.sidebar-collapsed .st-nav-link span {
+  .st-app.sidebar-collapsed .st-nav-link span,
+  .st-app.sidebar-collapsed .st-debug-toggle span,
+  .st-app.sidebar-collapsed .st-debug-chevron {
     display: inline;
+  }
+
+  .st-app.sidebar-collapsed .st-debug-options:not([hidden]) {
+    display: grid !important;
   }
 }
 

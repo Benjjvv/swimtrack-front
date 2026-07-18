@@ -1,5 +1,7 @@
 // Detección de personas con TensorFlow.js + COCO-SSD (cargados del CDN bajo demanda).
 
+import { getBoxDebugSettings } from './debug-settings.js';
+
 /**
  * @typedef {Object} Detection
  * @property {string} id
@@ -90,6 +92,51 @@ export function clearCanvas(canvas) {
   canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
 }
 
+/** Crea el estado aislado de las estelas de una fuente de video o imagen. */
+export function createDetectionOverlayState() {
+  return { trails: new Map() };
+}
+
+/** Elimina el historial de estelas sin tocar el contenido visible del canvas. */
+export function resetDetectionOverlayState(overlay) {
+  overlay?.trails?.clear();
+}
+
+function appendTrailPoints(overlay, detections) {
+  if (!overlay?.trails) return;
+  const visibleIds = new Set();
+  detections.forEach((detection, index) => {
+    const id = String(detection.id ?? index);
+    const [x, y, width, height] = detection.bbox;
+    const point = { x: x + width / 2, y: y + height / 2 };
+    const points = overlay.trails.get(id) || [];
+    const previous = points[points.length - 1];
+    if (!previous || previous.x !== point.x || previous.y !== point.y) {
+      points.push(point);
+      // Un límite fijo evita que una cámara abierta acumule memoria sin límite.
+      if (points.length > 24) points.shift();
+    }
+    overlay.trails.set(id, points);
+    visibleIds.add(id);
+  });
+  for (const id of overlay.trails.keys()) {
+    if (!visibleIds.has(id)) overlay.trails.delete(id);
+  }
+}
+
+function drawTrails(ctx, overlay, lineWidth) {
+  if (!overlay?.trails) return;
+  ctx.strokeStyle = 'rgb(34 197 94 / 0.55)';
+  ctx.lineWidth = Math.max(1, lineWidth / 2);
+  for (const points of overlay.trails.values()) {
+    if (points.length < 2) continue;
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    points.slice(1).forEach((point) => ctx.lineTo(point.x, point.y));
+    ctx.stroke();
+  }
+}
+
 /**
  * Dibuja las cajas con su porcentaje de confianza en el canvas. Iguala la resolución interna
  * del canvas a la de la fuente (video/imagen) para mapear las bbox 1:1; el CSS
@@ -97,8 +144,10 @@ export function clearCanvas(canvas) {
  * @param {HTMLCanvasElement} canvas
  * @param {HTMLVideoElement|HTMLImageElement|null} source
  * @param {Detection[]} detections
+ * @param {{overlay?: {trails: Map<string, Array<{x:number,y:number}>>}, settings?: {
+ *   showValues?: boolean, showCenters?: boolean, showTrails?: boolean}}} [options]
  */
-export function drawDetections(canvas, source, detections) {
+export function drawDetections(canvas, source, detections, options = {}) {
   const srcW = (source && (source.videoWidth || source.naturalWidth)) || 1280;
   const srcH = (source && (source.videoHeight || source.naturalHeight)) || 720;
   if (canvas.width !== srcW || canvas.height !== srcH) {
@@ -107,23 +156,50 @@ export function drawDetections(canvas, source, detections) {
   }
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.lineWidth = Math.max(2, srcW / 320);
+  const settings = options.settings || getBoxDebugSettings();
+  const overlay = options.overlay;
+  const lineWidth = Math.max(2, srcW / 320);
+  ctx.lineWidth = lineWidth;
   const fontPx = Math.max(14, Math.round(srcW / 60));
   ctx.font = `${fontPx}px sans-serif`;
   ctx.textBaseline = 'top';
 
+  if (settings.showTrails) {
+    appendTrailPoints(overlay, detections);
+    drawTrails(ctx, overlay, lineWidth);
+  } else {
+    resetDetectionOverlayState(overlay);
+  }
+
   detections.forEach((d) => {
     const [x, y, w, h] = d.bbox;
     ctx.strokeStyle = '#22c55e';
+    ctx.lineWidth = lineWidth;
     ctx.strokeRect(x, y, w, h);
 
-    const label = `${Math.round((d.score || 0) * 100)}%`;
-    const th = fontPx + 6;
-    const tw = ctx.measureText(label).width + 8;
-    const labelY = Math.max(0, y - th);
-    ctx.fillStyle = '#22c55e';
-    ctx.fillRect(x, labelY, tw, th);
-    ctx.fillStyle = '#03120a';
-    ctx.fillText(label, x + 4, labelY + 3);
+    if (settings.showValues) {
+      const label = `${Math.round((d.score || 0) * 100)}%`;
+      const th = fontPx + 6;
+      const tw = ctx.measureText(label).width + 8;
+      const labelY = Math.max(0, y - th);
+      ctx.fillStyle = '#22c55e';
+      ctx.fillRect(x, labelY, tw, th);
+      ctx.fillStyle = '#03120a';
+      ctx.fillText(label, x + 4, labelY + 3);
+    }
+
+    if (settings.showCenters) {
+      const centerX = x + w / 2;
+      const centerY = y + h / 2;
+      const arm = Math.max(5, srcW / 120);
+      ctx.strokeStyle = '#facc15';
+      ctx.lineWidth = Math.max(1, lineWidth / 2);
+      ctx.beginPath();
+      ctx.moveTo(centerX - arm, centerY);
+      ctx.lineTo(centerX + arm, centerY);
+      ctx.moveTo(centerX, centerY - arm);
+      ctx.lineTo(centerX, centerY + arm);
+      ctx.stroke();
+    }
   });
 }

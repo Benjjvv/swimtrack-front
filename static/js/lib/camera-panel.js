@@ -4,7 +4,14 @@
 // al límite de 300 líneas que impone el PLAN.
 
 import { CameraController } from './camera.js';
-import { loadCocoSsd, DetectionLoop, drawDetections, clearCanvas } from './detection.js';
+import {
+  loadCocoSsd,
+  DetectionLoop,
+  createDetectionOverlayState,
+  drawDetections,
+  clearCanvas,
+  resetDetectionOverlayState,
+} from './detection.js';
 import { DetectionPlayback } from './detection-playback.js';
 import { createCounter } from './count-badge.js';
 
@@ -38,10 +45,18 @@ export function initCameraPanel() {
     loadingEl.setAttribute('aria-hidden', String(!isBuffering));
   }
   const playback = new DetectionPlayback(video, canvas, setCount, setDetectionLoading);
+  const overlay = createDetectionOverlayState();
   /** @type {DetectionLoop|null} */
   let loop = null;
   /** @type {string|null} objectURL del video subido (hay que revocarlo). */
   let objectUrl = null;
+  /** Último dibujo local, para reflejar un cambio de Debug sin esperar otro frame. */
+  let lastLocalDraw = null;
+
+  function drawLocalDetections(source, detections) {
+    lastLocalDraw = { source, detections };
+    drawDetections(canvas, source, detections, { overlay });
+  }
 
   /** Frena cualquier modo activo (cámara, detección o playback) y resetea el stage. */
   function reset() {
@@ -55,6 +70,8 @@ export function initCameraPanel() {
     video.srcObject = null;
     video.classList.add('d-none');
     stopBtn.classList.add('d-none');
+    lastLocalDraw = null;
+    resetDetectionOverlayState(overlay);
     clearCanvas(canvas);
     setCount(0);
   }
@@ -71,7 +88,7 @@ export function initCameraPanel() {
       const model = await loadCocoSsd();
       loop = new DetectionLoop(model);
       loop.start(video, (dets) => {
-        drawDetections(canvas, video, dets);
+        drawLocalDetections(video, dets);
         setCount(dets.length);
       });
     } catch (err) {
@@ -85,7 +102,7 @@ export function initCameraPanel() {
     reset();
     placeholder.classList.add('d-none');
     img.classList.remove('d-none');
-    drawDetections(canvas, img, DEMO_DETECTIONS);
+    drawLocalDetections(img, DEMO_DETECTIONS);
     setCount(DEMO_DETECTIONS.length);
   }
 
@@ -110,6 +127,9 @@ export function initCameraPanel() {
   startBtn.addEventListener('click', startCamera);
   demoBtn.addEventListener('click', showDemo);
   stopBtn.addEventListener('click', reset);
+  window.addEventListener('swimtrack:box-debug-settings-changed', () => {
+    if (lastLocalDraw) drawLocalDetections(lastLocalDraw.source, lastLocalDraw.detections);
+  });
   if (uploadBtn && fileInput) {
     uploadBtn.addEventListener('click', () => fileInput.click());
     fileInput.addEventListener('change', () => {

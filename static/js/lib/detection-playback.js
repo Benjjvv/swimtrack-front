@@ -9,7 +9,12 @@
 // EventSource no sirve (es solo GET), así que consumimos el SSE con fetch() +
 // ReadableStream.
 
-import { drawDetections, clearCanvas } from './detection.js';
+import {
+  createDetectionOverlayState,
+  drawDetections,
+  clearCanvas,
+  resetDetectionOverlayState,
+} from './detection.js';
 
 // El video no debe alcanzar al stream SSE: esperamos esta ventaja antes de
 // iniciar y volvemos a pausar si la inferencia queda demasiado atrás.
@@ -72,6 +77,8 @@ export class DetectionPlayback {
     this._buffering = false;
     this._initialBufferWaiter = null;
     this._resumePromise = null;
+    this._overlay = createDetectionOverlayState();
+    this._onDebugSettingsChange = null;
   }
 
   /**
@@ -89,6 +96,7 @@ export class DetectionPlayback {
     this._playStarted = false;
     this._setBuffering(true);
     this._resumePromise = null;
+    resetDetectionOverlayState(this._overlay);
 
     this.video.srcObject = null; // por si venía de la cámara
     this.video.src = videoUrl;
@@ -103,6 +111,10 @@ export class DetectionPlayback {
     this.video.addEventListener('timeupdate', this._onTimeUpdate);
     this._resizeObs = new ResizeObserver(() => this._renderCurrent());
     this._resizeObs.observe(this.video);
+    this._onDebugSettingsChange = () => this._renderCurrent();
+    if (typeof window !== 'undefined') {
+      window.addEventListener('swimtrack:box-debug-settings-changed', this._onDebugSettingsChange);
+    }
 
     // Iniciar el POST antes de reproducir evita perder un ciclo completo del
     // video mientras Flask recibe el upload y la GPU produce el primer batch.
@@ -315,7 +327,9 @@ export class DetectionPlayback {
     const offX = (elW - frame.width * scale) / 2;
     const offY = (elH - frame.height * scale) / 2;
     const dets = (frame.boxes || []).map((b) => toDetection(b, scale, offX, offY));
-    drawDetections(this.canvas, { videoWidth: elW, videoHeight: elH }, dets);
+    drawDetections(this.canvas, { videoWidth: elW, videoHeight: elH }, dets, {
+      overlay: this._overlay,
+    });
     // El count del contrato es monótono en una pasada, pero el video está en
     // loop: al reiniciar, los frames vuelven a count bajo. Clampeamos al máximo
     // visto para que el contador no reinicie ni re-anime cada ciclo. (F9)
@@ -376,6 +390,11 @@ export class DetectionPlayback {
       this._resizeObs.disconnect();
       this._resizeObs = null;
     }
+    if (this._onDebugSettingsChange && typeof window !== 'undefined') {
+      window.removeEventListener('swimtrack:box-debug-settings-changed', this._onDebugSettingsChange);
+      this._onDebugSettingsChange = null;
+    }
+    resetDetectionOverlayState(this._overlay);
     clearCanvas(this.canvas);
   }
 }
