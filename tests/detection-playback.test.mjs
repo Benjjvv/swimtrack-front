@@ -282,6 +282,36 @@ test('keeps rendering after a loop when video frame callbacks do not resume', as
   await started;
 });
 
+test('does not render from timeupdate while video frame callbacks are healthy', async () => {
+  const video = new FrameCallbackVideo();
+  const canvas = fakeCanvas();
+  const playback = new ControlledPlayback(video, canvas);
+
+  const started = playback.start('blob:video', {}, '/api/detect');
+  await playback.streamStarted.promise;
+  playback._ingestEvent(`data: ${JSON.stringify(frame(0))}`);
+  playback._ingestEvent(`data: ${JSON.stringify(frame(0.1))}`);
+  playback._ingestEvent(`data: ${JSON.stringify(frame(2))}`);
+  await flush();
+
+  video.present(0.1);
+  const strokesAfterPresentation = canvas.context.strokeCalls;
+  assert.ok(strokesAfterPresentation > 0);
+
+  // El compositor sigue entregando frames: el reloj menos preciso de
+  // timeupdate no debe volver a dibujar entre dos frames presentados.
+  video.currentTime = 0.15;
+  video.emit('timeupdate');
+  assert.equal(canvas.context.strokeCalls, strokesAfterPresentation);
+
+  video.present(0.15);
+  assert.equal(canvas.context.strokeCalls, strokesAfterPresentation + 1);
+
+  playback.stop();
+  playback.streamGate.resolve();
+  await started;
+});
+
 test('adapts the resume target to slow SSE arrivals and reports rebuffer telemetry', async () => {
   const video = new FakeVideo();
   const canvas = fakeCanvas();

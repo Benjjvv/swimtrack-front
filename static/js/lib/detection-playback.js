@@ -28,6 +28,10 @@ const MAX_RESUME_BUFFER_SECONDS = 3;
 const DEFAULT_ARRIVAL_GAP_SECONDS = 0.15;
 const ARRIVAL_GAP_SAMPLE_LIMIT = 24;
 const INTERPOLATION_MAX_GAP_SECONDS = 0.5;
+// `timeupdate` se emite con poca frecuencia. Sólo lo usamos para recuperar el
+// overlay cuando el callback preciso del compositor no llega por un tiempo
+// anormal; de otro modo ambos relojes competirían y harían parpadear las cajas.
+const VIDEO_FRAME_CALLBACK_STALL_SECONDS = 0.35;
 // Un frame vacío de la IA no debe hacer desaparecer las cajas de inmediato.
 // Mantenemos la última detección reciente, pero acotamos su antigüedad para no
 // dejar una posición congelada durante una oclusión prolongada.
@@ -117,6 +121,8 @@ export class DetectionPlayback {
     this._presentedVideoTime = null;
     this._usesVideoFrameCallback = false;
     this._videoFrameRequestId = null;
+    this._lastVideoFrameCallbackAt = null;
+    this._awaitingVideoFrameAfterSeek = false;
   }
 
   /**
@@ -138,28 +144,33 @@ export class DetectionPlayback {
     resetDetectionOverlayState(this._overlay);
     this._lastRenderedVideoTime = null;
     this._presentedVideoTime = null;
+    this._lastVideoFrameCallbackAt = this._clock();
+    this._awaitingVideoFrameAfterSeek = false;
 
     this.video.srcObject = null; // por si venía de la cámara
     this.video.src = videoUrl;
     this.video.loop = true;      // el clip de prueba es corto: repetir es cómodo
 
     // requestVideoFrameCallback se ejecuta para cada frame enviado al compositor
-    // y entrega su mediaTime exacto. timeupdate se conserva para seek/pausa y
-    // como fallback para navegadores sin ese API.
+    // y entrega su mediaTime exacto. timeupdate se conserva como recuperación
+    // ante seek/loop o cuando ese API deja de entregar callbacks.
     this._usesVideoFrameCallback = typeof this.video.requestVideoFrameCallback === 'function';
     this._onTimeUpdate = () => {
-      // ``requestVideoFrameCallback`` corrige el dibujo con el timestamp exacto
-      // del compositor. ``timeupdate`` sigue siendo un fallback de recuperación:
-      // algunos navegadores pueden perder esa cadena de callbacks al reiniciar
-      // un video en loop. Sin este render, un frame vacío en t=0 limpia el canvas
-      // y las cajas no regresan hasta que vuelva a llegar un callback de video.
-      this._renderCurrent();
+      // Nunca dibujamos por ambos relojes durante reproducción normal: currentTime
+      // puede adelantar unos milisegundos a mediaTime y alternaría cajas/estelas.
+      // Después de un loop buscamos primero el próximo frame presentado; si no
+      // aparece, `timeupdate` mantiene vivo el overlay como recuperación.
+      if (!this._usesVideoFrameCallback || this.video.paused
+        || this._awaitingVideoFrameAfterSeek || this._videoFrameCallbackIsStalled()) {
+        this._renderCurrent();
+      }
       this._pauseIfBufferRunsDry();
     };
     this.video.addEventListener('timeupdate', this._onTimeUpdate);
     this._onSeeked = () => {
       // Un seek puede no presentar un frame nuevo de inmediato; reflejamos la
       // posición pedida y dejamos que el siguiente callback la afine.
+      this._awaitingVideoFrameAfterSeek = this._usesVideoFrameCallback && !this.video.paused;
       this._renderCurrent();
       this._pauseIfBufferRunsDry();
     };
@@ -469,6 +480,11 @@ export class DetectionPlayback {
     this._renderAt(this.video.currentTime);
   }
 
+  _videoFrameCallbackIsStalled() {
+    if (!this._usesVideoFrameCallback || this._lastVideoFrameCallbackAt === null) return false;
+    return this._clock() - this._lastVideoFrameCallbackAt >= VIDEO_FRAME_CALLBACK_STALL_SECONDS;
+  }
+
   /** Dibuja el frame que corresponde a un timestamp de media presentado. */
   _renderAt(time) {
     const currentTime = Number.isFinite(time) ? time : this.video.currentTime;
@@ -488,6 +504,8 @@ export class DetectionPlayback {
     this._videoFrameRequestId = this.video.requestVideoFrameCallback((_now, metadata) => {
       this._videoFrameRequestId = null;
       if (!this._isActive(runId)) return;
+      this._lastVideoFrameCallbackAt = this._clock();
+      this._awaitingVideoFrameAfterSeek = false;
       const mediaTime = metadata && Number.isFinite(metadata.mediaTime)
         ? metadata.mediaTime
         : this.video.currentTime;
@@ -621,6 +639,8 @@ export class DetectionPlayback {
     }
     this._videoFrameRequestId = null;
     this._usesVideoFrameCallback = false;
+    this._lastVideoFrameCallbackAt = null;
+    this._awaitingVideoFrameAfterSeek = false;
     if (this._resizeObs) {
       this._resizeObs.disconnect();
       this._resizeObs = null;
