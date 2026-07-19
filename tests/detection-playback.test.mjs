@@ -231,20 +231,28 @@ test('keeps the most recent boxes through short empty or delayed detection gaps'
   assert.equal(playback._frameAt(1.6), null);
 });
 
-test('counts each shadow lap episode once while receiving the SSE stream', () => {
+test('resets people and lap counters when the video repeats', () => {
   const video = new FakeVideo();
   const canvas = fakeCanvas();
+  const peopleCounts = [];
   const lapCounts = [];
-  const playback = new DetectionPlayback(video, canvas, undefined, undefined, undefined, (count) => {
+  const playback = new DetectionPlayback(video, canvas, (count) => {
+    peopleCounts.push(count);
+  }, undefined, undefined, (count) => {
     lapCounts.push(count);
   });
-  playback._onTimeUpdate = () => {};
+  playback.frames = [
+    { ...frame(0), count: 1 },
+    { ...lapFrame(0.5, 3), count: 2 },
+    { ...lapFrame(1, 4), count: 3 },
+  ];
 
-  playback._ingestEvent(`data: ${JSON.stringify(lapFrame(0, 3))}`);
-  playback._ingestEvent(`data: ${JSON.stringify(lapFrame(0.5, 3))}`);
-  playback._ingestEvent(`data: ${JSON.stringify(lapFrame(1, 4))}`);
+  playback._renderAt(0.1);
+  playback._renderAt(1);
+  playback._renderAt(0.1);
 
-  assert.deepEqual(lapCounts, [1, 1, 2]);
+  assert.deepEqual(peopleCounts, [1, 3, 0, 1]);
+  assert.deepEqual(lapCounts, [0, 2, 0, 0]);
 });
 
 test('renders using presented mediaTime and interpolates a stable tracked box', async () => {

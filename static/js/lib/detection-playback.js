@@ -105,10 +105,8 @@ export class DetectionPlayback {
     this._resizeObs = null;
     /** @type {AbortController|null} para cancelar el stream si se frena. */
     this._abort = null;
-    /** Máximo count visto en esta pasada; el contador no baja por el loop. (F9) */
+    /** Máximo count visto durante la repetición actual del video. */
     this._maxCount = 0;
-    /** Episodios shadow ya publicados por el stream actual. */
-    this._lapEpisodeKeys = new Set();
     /** Identifica la reproducción activa para ignorar callbacks de un video detenido. */
     this._runId = 0;
     this._streamDone = false;
@@ -149,8 +147,7 @@ export class DetectionPlayback {
     this.stop();
     const runId = ++this._runId;
     this.frames = [];
-    this._maxCount = 0; // contador arranca de cero con cada video nuevo
-    this._lapEpisodeKeys.clear();
+    this._maxCount = 0;
     this.onLapCount(0);
     this._streamDone = false;
     this._playStarted = false;
@@ -312,7 +309,6 @@ export class DetectionPlayback {
       return;
     }
     this._recordArrival();
-    this._recordLapDecisions(frame.lap_decisions);
     this.frames.push(frame); // {time,width,height,boxes,count}
     this._settleInitialBuffer();
     if (!this._usesVideoFrameCallback || !this._playStarted || this.video.paused) {
@@ -348,17 +344,6 @@ export class DetectionPlayback {
     }
     this._initialBufferWaiter = null;
     waiter.resolve();
-  }
-
-  _recordLapDecisions(decisions) {
-    if (!Array.isArray(decisions)) return;
-    for (const decision of decisions) {
-      const laneId = decision?.lane_id;
-      const episodeId = decision?.candidate_episode_id;
-      if (typeof laneId !== 'string' || !Number.isInteger(episodeId) || episodeId < 1) continue;
-      this._lapEpisodeKeys.add(`${laneId}:${episodeId}`);
-    }
-    this.onLapCount(this._lapEpisodeKeys.size);
   }
 
   _completeStream(runId) {
@@ -550,6 +535,9 @@ export class DetectionPlayback {
     if (this._lastRenderedVideoTime !== null && currentTime < this._lastRenderedVideoTime) {
       // Un seek o el loop del video no forman parte de la trayectoria física.
       resetDetectionOverlayState(this._overlay);
+      this._maxCount = 0;
+      this.onCount(0);
+      this.onLapCount(0);
     }
     this._lastRenderedVideoTime = currentTime;
     this._presentedVideoTime = currentTime;
@@ -597,12 +585,26 @@ export class DetectionPlayback {
     drawDetections(this.canvas, { videoWidth: elW, videoHeight: elH }, dets, {
       overlay: this._overlay,
     });
-    // El count del contrato es monótono en una pasada, pero el video está en
-    // loop: al reiniciar, los frames vuelven a count bajo. Clampeamos al máximo
-    // visto para que el contador no reinicie ni re-anime cada ciclo. (F9)
+    // El count del contrato es monótono dentro de una pasada. Se reinicia al
+    // volver el video al inicio para reflejar la nueva repetición del clip.
     const count = typeof frame.count === 'number' ? frame.count : dets.length;
     this._maxCount = Math.max(this._maxCount, count);
     this.onCount(this._maxCount);
+    this.onLapCount(this._lapCountAt(this._presentedVideoTime));
+  }
+
+  _lapCountAt(time) {
+    const episodeKeys = new Set();
+    for (const frame of this.frames) {
+      if (!Number.isFinite(frame.time) || frame.time > time) continue;
+      for (const decision of frame.lap_decisions || []) {
+        const laneId = decision?.lane_id;
+        const episodeId = decision?.candidate_episode_id;
+        if (typeof laneId !== 'string' || !Number.isInteger(episodeId) || episodeId < 1) continue;
+        episodeKeys.add(`${laneId}:${episodeId}`);
+      }
+    }
+    return episodeKeys.size;
   }
 
   /** Última detección con cajas que no sea futura para el instante indicado. */
