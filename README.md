@@ -82,7 +82,7 @@ node tests/detection-playback.test.mjs
 
 ### `POST /api/detect`
 
-Recibe `multipart/form-data` con el campo `video`, crea una sesión de tracking remota y responde `text/event-stream`. Cada evento contiene `{time,width,height,boxes,count,lap_scores?,tracking_diagnostics?,lap_decisions?}`. `lap_scores` conserva el score heurístico y la evidencia por carril cuando la calibración está habilitada; `tracking_diagnostics` aparece sólo si se habilita explícitamente. En modo shadow, `lap_decisions` aparece una sola vez cuando un episodio cruza el threshold configurado y declara explícitamente que el contador no fue incrementado. `count` mantiene su semántica histórica de IDs acumulados. El archivo temporal y la sesión remota se limpian al terminar, fallar o cortar el stream. Consulta [INTEGRACION_IA.md](INTEGRACION_IA.md) para el contrato completo.
+Recibe `multipart/form-data` con el campo `video`, crea una sesión de tracking remota y responde `text/event-stream`. Cada evento contiene `{time,width,height,boxes,count,lap_scores?,tracking_diagnostics?,lap_decisions?}`. `lap_scores` conserva el score heurístico y la evidencia por carril cuando la calibración está habilitada; `tracking_diagnostics` aparece sólo si se habilita explícitamente. En modo shadow, `lap_decisions` aparece una sola vez cuando un episodio cruza el threshold configurado: el Monitor los muestra como vueltas detectadas, sin modificar `count`, que mantiene su semántica histórica de IDs acumulados. El archivo temporal y la sesión remota se limpian al terminar, fallar o cortar el stream. Consulta [INTEGRACION_IA.md](INTEGRACION_IA.md) para el contrato completo.
 
 ### `POST /api/ai/analyze`
 

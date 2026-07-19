@@ -89,13 +89,15 @@ export class DetectionPlayback {
    * @param {(count:number)=>void} [onCount] callback con el count del frame.
    * @param {(isBuffering:boolean)=>void} [onBufferingChange] actualiza la UI de espera.
    * @param {(telemetry:{reason:string,bufferAhead:number,pauseThreshold:number,resumeThreshold:number,initialThreshold:number,rebufferCount:number,arrivalGapP90:number,streamDone:boolean})=>void} [onBufferTelemetry] actualiza el detalle de espera.
+   * @param {(count:number)=>void} [onLapCount] actualiza las vueltas detectadas en shadow mode.
    */
-  constructor(video, canvas, onCount, onBufferingChange, onBufferTelemetry) {
+  constructor(video, canvas, onCount, onBufferingChange, onBufferTelemetry, onLapCount) {
     this.video = video;
     this.canvas = canvas;
     this.onCount = onCount || (() => {});
     this.onBufferingChange = onBufferingChange || (() => {});
     this.onBufferTelemetry = onBufferTelemetry || (() => {});
+    this.onLapCount = onLapCount || (() => {});
     /** @type {Array<{time:number,width:number,height:number,boxes:any[],count:number}>} */
     this.frames = [];
     this._onTimeUpdate = null;
@@ -105,6 +107,8 @@ export class DetectionPlayback {
     this._abort = null;
     /** Máximo count visto en esta pasada; el contador no baja por el loop. (F9) */
     this._maxCount = 0;
+    /** Episodios shadow ya publicados por el stream actual. */
+    this._lapEpisodeKeys = new Set();
     /** Identifica la reproducción activa para ignorar callbacks de un video detenido. */
     this._runId = 0;
     this._streamDone = false;
@@ -146,6 +150,8 @@ export class DetectionPlayback {
     const runId = ++this._runId;
     this.frames = [];
     this._maxCount = 0; // contador arranca de cero con cada video nuevo
+    this._lapEpisodeKeys.clear();
+    this.onLapCount(0);
     this._streamDone = false;
     this._playStarted = false;
     this._resetBufferTelemetry();
@@ -306,6 +312,7 @@ export class DetectionPlayback {
       return;
     }
     this._recordArrival();
+    this._recordLapDecisions(frame.lap_decisions);
     this.frames.push(frame); // {time,width,height,boxes,count}
     this._settleInitialBuffer();
     if (!this._usesVideoFrameCallback || !this._playStarted || this.video.paused) {
@@ -341,6 +348,17 @@ export class DetectionPlayback {
     }
     this._initialBufferWaiter = null;
     waiter.resolve();
+  }
+
+  _recordLapDecisions(decisions) {
+    if (!Array.isArray(decisions)) return;
+    for (const decision of decisions) {
+      const laneId = decision?.lane_id;
+      const episodeId = decision?.candidate_episode_id;
+      if (typeof laneId !== 'string' || !Number.isInteger(episodeId) || episodeId < 1) continue;
+      this._lapEpisodeKeys.add(`${laneId}:${episodeId}`);
+    }
+    this.onLapCount(this._lapEpisodeKeys.size);
   }
 
   _completeStream(runId) {

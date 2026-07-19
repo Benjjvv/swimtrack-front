@@ -139,6 +139,13 @@ function movingFrame(time, x) {
   };
 }
 
+function lapFrame(time, episodeId) {
+  return {
+    ...frame(time),
+    lap_decisions: [{ lane_id: 'center', candidate_episode_id: episodeId }],
+  };
+}
+
 class ControlledPlayback extends DetectionPlayback {
   constructor(...args) {
     super(...args);
@@ -222,6 +229,22 @@ test('keeps the most recent boxes through short empty or delayed detection gaps'
 
   playback.frames = [frame(0)];
   assert.equal(playback._frameAt(1.6), null);
+});
+
+test('counts each shadow lap episode once while receiving the SSE stream', () => {
+  const video = new FakeVideo();
+  const canvas = fakeCanvas();
+  const lapCounts = [];
+  const playback = new DetectionPlayback(video, canvas, undefined, undefined, undefined, (count) => {
+    lapCounts.push(count);
+  });
+  playback._onTimeUpdate = () => {};
+
+  playback._ingestEvent(`data: ${JSON.stringify(lapFrame(0, 3))}`);
+  playback._ingestEvent(`data: ${JSON.stringify(lapFrame(0.5, 3))}`);
+  playback._ingestEvent(`data: ${JSON.stringify(lapFrame(1, 4))}`);
+
+  assert.deepEqual(lapCounts, [1, 1, 2]);
 });
 
 test('renders using presented mediaTime and interpolates a stable tracked box', async () => {
