@@ -33,6 +33,7 @@ export function initCameraPanel() {
   const loadingDetailEl = document.getElementById('detectionLoadingDetail');
   const countEl = document.getElementById('detectionCount');
   const lapCountEl = document.getElementById('lapCount');
+  const currentLengthEl = document.getElementById('currentLength');
   const startBtn = document.getElementById('startCameraBtn');
   const demoBtn = document.getElementById('demoModeBtn');
   const stopBtn = document.getElementById('stopCameraBtn');
@@ -44,6 +45,12 @@ export function initCameraPanel() {
   const setCount = createCounter(countEl); // escribe el count y anima "+N" al subir
   const setLapCount = lapCountEl
     ? createCounter(lapCountEl) : () => {}; // episodios shadow confirmados en el upload
+  function setLapProgress(lapCount) {
+    const normalizedLapCount = Number.isFinite(Number(lapCount))
+      ? Math.max(0, Number(lapCount)) : 0;
+    setLapCount(normalizedLapCount);
+    if (currentLengthEl) currentLengthEl.textContent = String(normalizedLapCount + 1);
+  }
   function setDetectionLoading(isBuffering) {
     if (!loadingEl) return;
     loadingEl.classList.toggle('d-none', !isBuffering);
@@ -73,7 +80,7 @@ export function initCameraPanel() {
     setCount,
     setDetectionLoading,
     setDetectionBufferTelemetry,
-    setLapCount,
+    setLapProgress,
   );
   const overlay = createDetectionOverlayState();
   /** @type {DetectionLoop|null} */
@@ -104,7 +111,7 @@ export function initCameraPanel() {
     resetDetectionOverlayState(overlay);
     clearCanvas(canvas);
     setCount(0);
-    setLapCount(0);
+    setLapProgress(0);
   }
 
   async function startCamera() {
