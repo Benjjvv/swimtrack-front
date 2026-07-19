@@ -113,7 +113,7 @@ En `frames` se reintentan errores de transporte y HTTP `408`, `425`, `429`, `500
 | `VISION_RETRY_BACKOFF_SECONDS` | `0.5` | Base del backoff exponencial. |
 | `VISION_FALLBACK_FPS` | `30` | FPS usado si OpenCV no puede leerlo. |
 | `LAP_EPISODE_MODE` | `shadow` | `shadow` reduce y registra episodios; `off` lo deshabilita. No se acepta `active` porque el conteo visible todavía no está habilitado. |
-| `LAP_CONFIDENCE_THRESHOLD` | sin valor | Threshold `[0,1]` para emitir decisiones shadow. Se deja sin default para no convertir `0.05` en una decisión de producto; puede configurarse explícitamente durante una evaluación. |
+| `LAP_CONFIDENCE_THRESHOLD` | `0.2` | Threshold `[0,1]` para emitir decisiones shadow. El menú Debug puede sobrescribirlo por upload y lo guarda sólo en el navegador. |
 
 `IA_BASE_URL` e `IA_SECRET_HEADER` siguen perteneciendo al coach textual de `/api/ai/analyze`; no se reutilizan para visión.
 

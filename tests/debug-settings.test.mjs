@@ -15,23 +15,36 @@ function memoryStorage() {
   };
 }
 
-test('uses the current box visualization as the default Debug configuration', () => {
+test('uses the current visualization and lap threshold as the default Debug configuration', () => {
   assert.deepEqual(DEFAULT_BOX_DEBUG_SETTINGS, {
     showValues: true,
     showCenters: false,
     showTrails: false,
+    lapConfidenceThreshold: 0.2,
   });
   assert.deepEqual(getBoxDebugSettings(memoryStorage()), DEFAULT_BOX_DEBUG_SETTINGS);
 });
 
-test('persists each Debug checkbox independently', () => {
+test('persists Debug checkboxes and the lap threshold independently', () => {
   const storage = memoryStorage();
-  const saved = saveBoxDebugSettings({ showCenters: true, showTrails: true }, storage);
+  const saved = saveBoxDebugSettings({
+    showCenters: true,
+    showTrails: true,
+    lapConfidenceThreshold: '0.7',
+  }, storage);
 
   assert.deepEqual(saved, {
     showValues: true,
     showCenters: true,
     showTrails: true,
+    lapConfidenceThreshold: 0.7,
   });
   assert.deepEqual(getBoxDebugSettings(storage), saved);
+});
+
+test('falls back to the default lap threshold when a saved value is invalid', () => {
+  const storage = memoryStorage();
+  storage.setItem('swimtrack-box-debug-settings', JSON.stringify({ lapConfidenceThreshold: 2 }));
+
+  assert.equal(getBoxDebugSettings(storage).lapConfidenceThreshold, 0.2);
 });

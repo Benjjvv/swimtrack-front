@@ -187,9 +187,7 @@ def test_detect_emits_one_shadow_decision_without_changing_visible_count(caplog)
 
     assert [frame["count"] for frame in frames] == [1, 1, 1]
     decisions = [
-        decision
-        for frame in frames
-        for decision in frame.get("lap_decisions", [])
+        decision for frame in frames for decision in frame.get("lap_decisions", [])
     ]
     assert len(decisions) == 1
     assert decisions[0] == {
@@ -235,6 +233,59 @@ def test_detect_shadow_state_resets_for_each_video_request():
             )
 
     assert decision_counts == [1, 1]
+
+
+def test_detect_allows_the_debug_threshold_to_override_the_server_default():
+    app = create_app(
+        {
+            "TESTING": True,
+            "URL_PREFIX": "/",
+            "LAP_EPISODE_MODE": "shadow",
+            "LAP_CONFIDENCE_THRESHOLD": 0.2,
+        },
+        detector=FakeLapDetector(),
+    )
+
+    with app.test_client() as client:
+        response = client.post(
+            "/api/detect",
+            data={
+                "video": (io.BytesIO(b"fake-video"), "sample.mp4"),
+                "lap_confidence_threshold": "0.7",
+            },
+            content_type="multipart/form-data",
+        )
+        frames = _events(response)
+        response.close()
+
+    decisions = [
+        decision for frame in frames for decision in frame.get("lap_decisions", [])
+    ]
+    assert len(decisions) == 1
+    assert decisions[0]["lap_score"] == 0.8
+    assert decisions[0]["threshold"] == 0.7
+
+
+def test_detect_rejects_an_invalid_debug_threshold_before_saving_the_upload():
+    detector = FakeDetector()
+    app = create_app({"TESTING": True, "URL_PREFIX": "/"}, detector=detector)
+
+    with app.test_client() as client:
+        response = client.post(
+            "/api/detect",
+            data={
+                "video": (io.BytesIO(b"fake-video"), "sample.mp4"),
+                "lap_confidence_threshold": "2",
+            },
+            content_type="multipart/form-data",
+        )
+
+    assert response.status_code == 400
+    assert response.get_json() == {
+        "ok": False,
+        "error": "LAP_CONFIDENCE_THRESHOLD debe estar entre 0 y 1.",
+    }
+    assert detector.video_path is None
 
 
 def test_create_app_rejects_active_mode_and_invalid_threshold():

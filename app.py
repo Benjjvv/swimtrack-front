@@ -195,6 +195,7 @@ def _sse_detect(
                     episode["score_version"],
                     str(episode["decision_emitted"]).lower(),
                 )
+
         def optional_ms(timestamp):
             if timestamp is None:
                 return "unavailable"
@@ -205,9 +206,7 @@ def _sse_detect(
         if request_started is not None:
             request_to_end_ms = (finished_at - request_started) * 1000.0
             if first_event_at is not None:
-                request_to_first_event_ms = (
-                    (first_event_at - request_started) * 1000.0
-                )
+                request_to_first_event_ms = (first_event_at - request_started) * 1000.0
         logger.info(
             "vision_sse_timing frames=%d first_event_ms=%s sse_elapsed_ms=%.1f "
             "serialization_ms=%.1f yield_resume_ms=%.1f serialized_bytes=%d "
@@ -222,9 +221,7 @@ def _sse_detect(
             "unavailable"
             if request_to_first_event_ms is None
             else f"{request_to_first_event_ms:.1f}",
-            "unavailable"
-            if request_to_end_ms is None
-            else f"{request_to_end_ms:.1f}",
+            "unavailable" if request_to_end_ms is None else f"{request_to_end_ms:.1f}",
             "unavailable" if upload_save_ms is None else f"{upload_save_ms:.1f}",
             str(completed).lower(),
             str(error_emitted).lower(),
@@ -304,6 +301,16 @@ def create_app(config_overrides=None, detector=None):
                 {"ok": False, "error": "El archivo no parece ser un video."}
             ), 400
 
+        effective_lap_confidence_threshold = lap_confidence_threshold
+        request_lap_confidence_threshold = request.form.get("lap_confidence_threshold")
+        if request_lap_confidence_threshold is not None:
+            try:
+                effective_lap_confidence_threshold = LapEpisodeReducer(
+                    request_lap_confidence_threshold
+                ).threshold
+            except ValueError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
+
         # OpenCV necesita una ruta en disco: guardamos el upload en un temporal.
         # Se elimina al terminar, al fallar o cuando el cliente corta el stream.
         uploaded_ext = os.path.splitext(file.filename)[1].lower()
@@ -338,7 +345,7 @@ def create_app(config_overrides=None, detector=None):
                     tmp_path,
                     app.extensions["swimmer_detector"],
                     lap_episode_mode=lap_episode_mode,
-                    lap_confidence_threshold=lap_confidence_threshold,
+                    lap_confidence_threshold=effective_lap_confidence_threshold,
                     logger=app.logger,
                     request_started=request_started,
                     upload_save_ms=upload_save_ms,

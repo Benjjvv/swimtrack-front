@@ -17,6 +17,7 @@ import {
   clearCanvas,
   resetDetectionOverlayState,
 } from './detection.js';
+import { getBoxDebugSettings } from './debug-settings.js';
 
 // El video no debe alcanzar al stream SSE: esperamos esta ventaja antes de
 // iniciar y volvemos a pausar si la inferencia queda demasiado atrás.
@@ -246,6 +247,10 @@ export class DetectionPlayback {
   async _streamDetections(file, detectUrl, runId) {
     const form = new FormData();
     form.append('video', file); // el back lo lee como request.files['video']
+    form.append(
+      'lap_confidence_threshold',
+      String(getBoxDebugSettings().lapConfidenceThreshold),
+    );
     const abort = new AbortController();
     this._abort = abort;
     try {

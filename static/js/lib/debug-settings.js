@@ -7,6 +7,7 @@ export const DEFAULT_BOX_DEBUG_SETTINGS = Object.freeze({
   showValues: true,
   showCenters: false,
   showTrails: false,
+  lapConfidenceThreshold: 0.2,
 });
 
 function storageOrNull(storage) {
@@ -16,6 +17,10 @@ function storageOrNull(storage) {
 
 /** Normaliza datos guardados antiguos o inválidos sin perder los defaults. */
 export function normalizeBoxDebugSettings(value) {
+  const rawLapConfidenceThreshold = value?.lapConfidenceThreshold;
+  const lapConfidenceThreshold = typeof rawLapConfidenceThreshold === 'number'
+    || (typeof rawLapConfidenceThreshold === 'string' && rawLapConfidenceThreshold.trim())
+    ? Number(rawLapConfidenceThreshold) : Number.NaN;
   return {
     showValues: typeof value?.showValues === 'boolean'
       ? value.showValues : DEFAULT_BOX_DEBUG_SETTINGS.showValues,
@@ -23,6 +28,9 @@ export function normalizeBoxDebugSettings(value) {
       ? value.showCenters : DEFAULT_BOX_DEBUG_SETTINGS.showCenters,
     showTrails: typeof value?.showTrails === 'boolean'
       ? value.showTrails : DEFAULT_BOX_DEBUG_SETTINGS.showTrails,
+    lapConfidenceThreshold: Number.isFinite(lapConfidenceThreshold)
+      && lapConfidenceThreshold >= 0 && lapConfidenceThreshold <= 1
+      ? lapConfidenceThreshold : DEFAULT_BOX_DEBUG_SETTINGS.lapConfidenceThreshold,
   };
 }
 
@@ -66,7 +74,9 @@ export function initBoxDebugMenu() {
   const inputs = [...menu.querySelectorAll('[data-box-debug-setting]')];
   const updateInputs = (settings) => {
     inputs.forEach((input) => {
-      input.checked = settings[input.dataset.boxDebugSetting];
+      const value = settings[input.dataset.boxDebugSetting];
+      if (input.type === 'checkbox') input.checked = value;
+      else input.value = String(value);
     });
   };
   updateInputs(getBoxDebugSettings());
@@ -80,7 +90,8 @@ export function initBoxDebugMenu() {
   inputs.forEach((input) => {
     input.addEventListener('change', () => {
       const settings = saveBoxDebugSettings({
-        [input.dataset.boxDebugSetting]: input.checked,
+        [input.dataset.boxDebugSetting]: input.type === 'checkbox'
+          ? input.checked : input.value,
       });
       updateInputs(settings);
       emitSettingsChanged(settings);
