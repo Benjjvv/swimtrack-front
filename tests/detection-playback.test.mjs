@@ -328,6 +328,26 @@ test('counts independent lap episodes for two canonical identities in one lane',
   assert.equal(playback._lapCountAt(0), 2);
 });
 
+test('breaks lap episodes down by AI lane so the Monitor can wire them to a Pista', () => {
+  const video = new FakeVideo();
+  const canvas = fakeCanvas();
+  const playback = new DetectionPlayback(video, canvas);
+  playback.frames = [
+    {
+      ...frame(0),
+      lap_decisions: [
+        { lane_id: 'center', identity_id: 1, candidate_episode_id: 1 },
+        { lane_id: 'center', identity_id: 2, candidate_episode_id: 1 },
+        { lane_id: 'left', identity_id: 3, candidate_episode_id: 5 },
+      ],
+    },
+  ];
+
+  assert.deepEqual(playback._lapCountsByLaneAt(0), { center: 2, left: 1 });
+  // El total (usado por el contador de abajo) sigue siendo la suma del desglose.
+  assert.equal(playback._lapCountAt(0), 3);
+});
+
 test('renders using presented mediaTime and interpolates a stable tracked box', async () => {
   const video = new FrameCallbackVideo();
   const canvas = fakeCanvas();

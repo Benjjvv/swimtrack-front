@@ -5,6 +5,7 @@ import { getItem, setItem, KEYS } from './lib/storage.js';
 import { generateId, formatTime } from './lib/format.js';
 import { Stopwatch } from './lib/stopwatch.js';
 import { initCameraPanel } from './lib/camera-panel.js';
+import { initLaneSync, renderAiSelector } from './lib/lane-sync.js';
 import { showToast } from './lib/toast.js';
 
 // --- Estado ---
@@ -223,6 +224,7 @@ function laneCard(lane) {
             <i class="bi bi-trash"></i>
           </button>
         </div>
+        ${renderAiSelector(lane)}
         <div class="d-flex flex-column gap-3">${body}</div>
         ${addSwimmerRow(lane)}
       </div>
@@ -267,6 +269,18 @@ lanesContainer.addEventListener('click', (e) => {
   }
 });
 
+// Mapeo Pista → carril IA: guarda el lane_id de la IA en la pista (lane-sync le
+// enchufa el conteo de largos detectados).
+lanesContainer.addEventListener('change', (e) => {
+  const sel = e.target.closest('.lane-ai-select');
+  const card = sel && sel.closest('.card[data-lane]');
+  const lane = card && lanes.find((l) => l.id === card.dataset.lane);
+  if (!lane) return;
+  lane.aiLaneId = sel.value || undefined;
+  persistLanes();
+  render();
+});
+
 // Onboarding: cuando el modal registra nadadores, reflejarlos en el panel derecho.
 window.addEventListener('swimtrack:swimmers-registered', (e) => {
   swimmers = getItem(KEYS.SWIMMERS, []);
@@ -280,8 +294,7 @@ window.addEventListener('swimtrack:swimmers-registered', (e) => {
   render();
 });
 
-// Primer render.
+// Primer render + wiring de paneles.
 render();
-
-// Cámara + detección (Tarea 6): panel autónomo en lib/camera-panel.js.
-initCameraPanel();
+initCameraPanel(); // cámara/detección autónoma (lib/camera-panel.js)
+initLaneSync({ getLanes: () => lanes, getControl, requestRender: render }); // timer + largos IA ↔ pistas

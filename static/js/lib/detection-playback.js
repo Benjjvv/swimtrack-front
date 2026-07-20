@@ -94,7 +94,7 @@ export class DetectionPlayback {
    * @param {(count:number)=>void} [onCount] callback con personas canónicas confirmadas.
    * @param {(isBuffering:boolean)=>void} [onBufferingChange] actualiza la UI de espera.
    * @param {(telemetry:{reason:string,bufferAhead:number,pauseThreshold:number,resumeThreshold:number,initialThreshold:number,rebufferCount:number,arrivalGapP90:number,streamDone:boolean})=>void} [onBufferTelemetry] actualiza el detalle de espera.
-   * @param {(count:number)=>void} [onLapCount] actualiza las vueltas detectadas en shadow mode.
+   * @param {(count:number, byLane?:Record<string,number>)=>void} [onLapCount] actualiza las vueltas detectadas en shadow mode; byLane las desglosa por lane_id de la IA.
    */
   constructor(video, canvas, onCount, onBufferingChange, onBufferTelemetry, onLapCount) {
     this.video = video;
@@ -607,11 +607,24 @@ export class DetectionPlayback {
       this._maxCount = dets.length;
       this.onCount(dets.length);
     }
-    this.onLapCount(this._lapCountAt(this._presentedVideoTime));
+    const lapByLane = this._lapCountsByLaneAt(this._presentedVideoTime);
+    const lapTotal = Object.values(lapByLane).reduce((sum, n) => sum + n, 0);
+    this.onLapCount(lapTotal, lapByLane);
   }
 
   _lapCountAt(time) {
-    const episodeKeys = new Set();
+    const byLane = this._lapCountsByLaneAt(time);
+    return Object.values(byLane).reduce((sum, n) => sum + n, 0);
+  }
+
+  /**
+   * Igual que _lapCountAt pero desglosado por lane_id de la IA:
+   * { [lane_id]: nº de episodios de largo únicos hasta `time` }. El Monitor
+   * mapea cada lane_id a una Pista para conectar la cuenta a esa pista.
+   */
+  _lapCountsByLaneAt(time) {
+    const seen = new Set();
+    const counts = {};
     for (const frame of this.frames) {
       if (!Number.isFinite(frame.time) || frame.time > time) continue;
       for (const decision of frame.lap_decisions || []) {
@@ -620,10 +633,13 @@ export class DetectionPlayback {
         const episodeId = decision?.candidate_episode_id;
         if (typeof laneId !== 'string' || !Number.isInteger(episodeId) || episodeId < 1) continue;
         const identityKey = Number.isInteger(identityId) && identityId > 0 ? identityId : 'legacy';
-        episodeKeys.add(`${laneId}:${identityKey}:${episodeId}`);
+        const key = `${laneId}:${identityKey}:${episodeId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        counts[laneId] = (counts[laneId] || 0) + 1;
       }
     }
-    return episodeKeys.size;
+    return counts;
   }
 
   /** Última detección con cajas que no sea futura para el instante indicado. */
