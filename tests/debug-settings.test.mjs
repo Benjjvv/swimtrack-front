@@ -20,7 +20,7 @@ test('uses the current visualization and lap threshold as the default Debug conf
     showValues: true,
     showCenters: false,
     showTrails: false,
-    lapConfidenceThreshold: 0.2,
+    lapConfidenceThreshold: 0.15,
   });
   assert.deepEqual(getBoxDebugSettings(memoryStorage()), DEFAULT_BOX_DEBUG_SETTINGS);
 });
@@ -46,5 +46,5 @@ test('falls back to the default lap threshold when a saved value is invalid', ()
   const storage = memoryStorage();
   storage.setItem('swimtrack-box-debug-settings', JSON.stringify({ lapConfidenceThreshold: 2 }));
 
-  assert.equal(getBoxDebugSettings(storage).lapConfidenceThreshold, 0.2);
+  assert.equal(getBoxDebugSettings(storage).lapConfidenceThreshold, 0.15);
 });

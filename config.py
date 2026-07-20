@@ -51,7 +51,7 @@ class Config:
     # Reducer de episodios en shadow mode. El threshold puede sobrescribirse
     # por upload desde el menú Debug sin alterar la configuración del servidor.
     LAP_EPISODE_MODE = os.getenv("LAP_EPISODE_MODE", "shadow").strip().lower()
-    LAP_CONFIDENCE_THRESHOLD = os.getenv("LAP_CONFIDENCE_THRESHOLD", "0.2")
+    LAP_CONFIDENCE_THRESHOLD = os.getenv("LAP_CONFIDENCE_THRESHOLD", "0.15")
 
 
 class DevelopmentConfig(Config):

@@ -7,7 +7,7 @@ export const DEFAULT_BOX_DEBUG_SETTINGS = Object.freeze({
   showValues: true,
   showCenters: false,
   showTrails: false,
-  lapConfidenceThreshold: 0.2,
+  lapConfidenceThreshold: 0.15,
 });
 
 function storageOrNull(storage) {

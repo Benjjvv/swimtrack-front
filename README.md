@@ -60,7 +60,7 @@ Abrir <http://localhost:7001>.
 | `MAX_CONTENT_LENGTH` | Tamaño máximo del upload de video completo; default 1 GiB. |
 | `FLASK_SECRET_KEY` | Clave de sesión de Flask. |
 | `LAP_EPISODE_MODE` | Reducer de episodios: `shadow` (default) u `off`; no existe un modo que cambie el contador visible. |
-| `LAP_CONFIDENCE_THRESHOLD` | Threshold `[0,1]` para decisiones shadow; default `0.2`. El menú Debug puede sobrescribirlo por upload en el navegador. |
+| `LAP_CONFIDENCE_THRESHOLD` | Threshold `[0,1]` para decisiones shadow; default `0.15`. El menú Debug puede sobrescribirlo por upload en el navegador. |
 
 `.env` no se sube al repo; `.env.example` sí.
 
