@@ -14,6 +14,8 @@ import {
 } from './detection.js';
 import { DetectionPlayback } from './detection-playback.js';
 import { createCounter } from './count-badge.js';
+import { openOnboarding } from './swimmer-onboarding.js';
+import { getItem, KEYS } from './storage.js';
 
 // Detecciones simuladas para "Modo Demo" (coords sobre un lienzo de 1280×720).
 const DEMO_DETECTIONS = [
@@ -21,6 +23,17 @@ const DEMO_DETECTIONS = [
   { id: 'd2', bbox: [560, 170, 230, 160], score: 0.88, class: 'person' },
   { id: 'd3', bbox: [880, 120, 250, 150], score: 0.81, class: 'person' },
 ];
+
+/**
+ * Antes de iniciar cámara o subir video exigimos al menos un nadador registrado.
+ * Si no hay ninguno, abre el onboarding. Devuelve true si se puede continuar.
+ * @returns {Promise<boolean>}
+ */
+async function ensureSwimmers() {
+  if (getItem(KEYS.SWIMMERS, []).length > 0) return true;
+  const chosen = await openOnboarding();
+  return Array.isArray(chosen) && chosen.length > 0;
+}
 
 /** Cablea los botones Iniciar/Demo/Subir Video/Detener y el contador de personas. */
 export function initCameraPanel() {
@@ -170,14 +183,18 @@ export function initCameraPanel() {
     }
   }
 
-  startBtn.addEventListener('click', startCamera);
+  startBtn.addEventListener('click', async () => {
+    if (await ensureSwimmers()) startCamera();
+  });
   demoBtn.addEventListener('click', showDemo);
   stopBtn.addEventListener('click', reset);
   window.addEventListener('swimtrack:box-debug-settings-changed', () => {
     if (lastLocalDraw) drawLocalDetections(lastLocalDraw.source, lastLocalDraw.detections);
   });
   if (uploadBtn && fileInput) {
-    uploadBtn.addEventListener('click', () => fileInput.click());
+    uploadBtn.addEventListener('click', async () => {
+      if (await ensureSwimmers()) fileInput.click();
+    });
     fileInput.addEventListener('change', () => {
       const file = fileInput.files && fileInput.files[0];
       if (file) useUploadedVideo(file);
