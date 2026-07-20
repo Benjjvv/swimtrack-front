@@ -59,11 +59,15 @@ export function initCameraPanel() {
   const setCount = createCounter(countEl); // escribe el count y anima "+N" al subir
   const setLapCount = lapCountEl
     ? createCounter(lapCountEl) : () => {}; // episodios shadow confirmados en el upload
-  function setLapProgress(lapCount) {
+  function setLapProgress(lapCount, byLane) {
     const normalizedLapCount = Number.isFinite(Number(lapCount))
       ? Math.max(0, Number(lapCount)) : 0;
     setLapCount(normalizedLapCount);
     if (currentLengthEl) currentLengthEl.textContent = String(normalizedLapCount + 1);
+    // El Monitor conecta este desglose por carril IA a cada Pista (lane-sync.js).
+    window.dispatchEvent(new CustomEvent('swimtrack:lap-by-lane', {
+      detail: byLane && typeof byLane === 'object' ? byLane : {},
+    }));
   }
   function setCountLabel(label) {
     if (countLabelEl) countLabelEl.textContent = label;
@@ -130,6 +134,8 @@ export function initCameraPanel() {
     setCount(0);
     setCountLabel('persona(s) detectada(s)');
     setLapProgress(0);
+    // Fin de sesión: el Monitor pausa los cronómetros de las pistas.
+    window.dispatchEvent(new CustomEvent('swimtrack:video-stopped'));
   }
 
   async function startCamera() {
@@ -188,6 +194,14 @@ export function initCameraPanel() {
   });
   demoBtn.addEventListener('click', showDemo);
   stopBtn.addEventListener('click', reset);
+  // Ciclo de vida del video → el Monitor corre/pausa los cronómetros de pista.
+  // El buffering ya pausa/reanuda el <video>, así que el timer queda sincronizado.
+  video.addEventListener('play', () => {
+    window.dispatchEvent(new CustomEvent('swimtrack:video-play'));
+  });
+  video.addEventListener('pause', () => {
+    window.dispatchEvent(new CustomEvent('swimtrack:video-pause'));
+  });
   window.addEventListener('swimtrack:box-debug-settings-changed', () => {
     if (lastLocalDraw) drawLocalDetections(lastLocalDraw.source, lastLocalDraw.detections);
   });

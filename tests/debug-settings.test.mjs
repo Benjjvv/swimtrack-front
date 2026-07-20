@@ -19,6 +19,7 @@ test('uses the current visualization and lap threshold as the default Debug conf
   assert.deepEqual(DEFAULT_BOX_DEBUG_SETTINGS, {
     showValues: true,
     showSwimmerIds: false,
+    showTimestamp: false,
     showCenters: false,
     showTrails: false,
     lapConfidenceThreshold: 0.15,
@@ -38,6 +39,7 @@ test('persists Debug checkboxes and the lap threshold independently', () => {
   assert.deepEqual(saved, {
     showValues: true,
     showSwimmerIds: true,
+    showTimestamp: false,
     showCenters: true,
     showTrails: true,
     lapConfidenceThreshold: 0.7,
