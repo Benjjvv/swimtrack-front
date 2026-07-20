@@ -220,7 +220,7 @@ class RemoteSwimmerDetector:
             logger=logger,
         )
 
-    def stream(self, video_path: str) -> Iterator[dict[str, Any]]:
+    def stream(self, video_path: str, max_detection_distance_per_second: float | None = None) -> Iterator[dict[str, Any]]:
         """Emite resultados ordenados usando el transporte configurado.
 
         ``frames`` conserva el transporte JPEG idempotente actual. ``video``
@@ -228,11 +228,11 @@ class RemoteSwimmerDetector:
         retransmite una vez al servicio que decodifica en la GPU.
         """
         if self.transport == "video":
-            yield from self._stream_video(video_path)
+            yield from self._stream_video(video_path, max_detection_distance_per_second)
             return
-        yield from self._stream_frames(video_path)
+        yield from self._stream_frames(video_path, max_detection_distance_per_second)
 
-    def _stream_frames(self, video_path: str) -> Iterator[dict[str, Any]]:
+    def _stream_frames(self, video_path: str, max_detection_distance_per_second: float | None) -> Iterator[dict[str, Any]]:
         """Emite resultados ordenados mientras prepara el siguiente batch.
 
         El productor solo lee, muestrea y codifica JPEG. El consumidor (este
@@ -272,7 +272,7 @@ class RemoteSwimmerDetector:
                 timeout=self._timeout,
             )
             session_started = time.perf_counter()
-            session_id = self._create_session(client, info_message.tracking_fps)
+            session_id = self._create_session(client, info_message.tracking_fps, max_detection_distance_per_second)
             self._logger.info(
                 "vision_session_timing source_fps=%.3f sampled_fps=%.3f stride=%d "
                 "create_ms=%.1f",
@@ -315,7 +315,7 @@ class RemoteSwimmerDetector:
             if client is not None:
                 client.close()
 
-    def _stream_video(self, video_path: str) -> Iterator[dict[str, Any]]:
+    def _stream_video(self, video_path: str, max_detection_distance_per_second: float | None) -> Iterator[dict[str, Any]]:
         """Reenvía un video original y normaliza su NDJSON de resultados.
 
         Esta ruta no hace ``capture.read()``: el Front sólo obtiene FPS para
@@ -332,7 +332,7 @@ class RemoteSwimmerDetector:
                 timeout=self._timeout,
             )
             session_started = time.perf_counter()
-            session_id = self._create_session(client, stream_info.tracking_fps)
+            session_id = self._create_session(client, stream_info.tracking_fps, max_detection_distance_per_second)
             self._logger.info(
                 "vision_session_timing transport=video source_fps=%.3f "
                 "sampled_fps=%.3f stride=%d create_ms=%.1f",
@@ -804,12 +804,14 @@ class RemoteSwimmerDetector:
             jpeg_encode_ms,
         )
 
-    def _create_session(self, client: httpx.Client, fps: float) -> str:
+    def _create_session(self, client: httpx.Client, fps: float, max_detection_distance_per_second: float | None = None) -> str:
         payload: dict[str, float | str] = {"fps": fps}
         if self.lap_calibration_id is not None:
             payload["lap_calibration_id"] = self.lap_calibration_id
         if self.tracking_diagnostics != "none":
             payload["diagnostics"] = self.tracking_diagnostics
+        if max_detection_distance_per_second is not None:
+            payload["max_detection_distance_per_second"] = max_detection_distance_per_second
         try:
             response = client.post(
                 f"{self.base_url}/v1/tracking-sessions",

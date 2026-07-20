@@ -107,6 +107,7 @@ def _sse_detect(
     lap_episode_mode="shadow",
     lap_confidence_threshold=None,
     lap_cooldown_seconds=10.0,
+    max_detection_distance_per_second=None,
     logger=_LOGGER,
     request_started=None,
     upload_save_ms=None,
@@ -139,7 +140,7 @@ def _sse_detect(
     try:
         # Cada stream remoto crea su propia sesión ByteTrack, por lo que dos
         # uploads concurrentes no comparten IDs ni requieren un lock global.
-        for frame in detector.stream(video_path):
+        for frame in detector.stream(video_path, max_detection_distance_per_second):
             for box in frame.get("boxes", []):
                 seen_track_ids.add(box.get("id"))
             frame["count"] = len(seen_track_ids)
@@ -308,6 +309,7 @@ def create_app(config_overrides=None, detector=None):
 
         effective_lap_confidence_threshold = lap_confidence_threshold
         effective_lap_cooldown_seconds = lap_cooldown_seconds
+        effective_max_detection_distance_per_second = None
         request_lap_confidence_threshold = request.form.get("lap_confidence_threshold")
         if request_lap_confidence_threshold is not None:
             try:
@@ -324,6 +326,14 @@ def create_app(config_overrides=None, detector=None):
                 ).cooldown_seconds
             except ValueError as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 400
+        request_max_detection_distance = request.form.get("max_detection_distance_per_second")
+        if request_max_detection_distance is not None:
+            try:
+                effective_max_detection_distance_per_second = float(request_max_detection_distance)
+                if not 0 < effective_max_detection_distance_per_second <= 1:
+                    raise ValueError
+            except (TypeError, ValueError):
+                return jsonify({"ok": False, "error": "La distancia máxima debe estar entre 0 y 1."}), 400
 
         # OpenCV necesita una ruta en disco: guardamos el upload en un temporal.
         # Se elimina al terminar, al fallar o cuando el cliente corta el stream.
@@ -361,6 +371,7 @@ def create_app(config_overrides=None, detector=None):
                     lap_episode_mode=lap_episode_mode,
                     lap_confidence_threshold=effective_lap_confidence_threshold,
                     lap_cooldown_seconds=effective_lap_cooldown_seconds,
+                    max_detection_distance_per_second=effective_max_detection_distance_per_second,
                     logger=app.logger,
                     request_started=request_started,
                     upload_save_ms=upload_save_ms,

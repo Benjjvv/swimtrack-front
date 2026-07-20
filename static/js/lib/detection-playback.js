@@ -260,6 +260,10 @@ export class DetectionPlayback {
       String(getBoxDebugSettings().lapConfidenceThreshold),
     );
     form.append('lap_cooldown_seconds', String(getBoxDebugSettings().lapCooldownSeconds));
+    form.append(
+      'max_detection_distance_per_second',
+      String(getBoxDebugSettings().maxDetectionDistancePerSecond),
+    );
     const abort = new AbortController();
     this._abort = abort;
     try {

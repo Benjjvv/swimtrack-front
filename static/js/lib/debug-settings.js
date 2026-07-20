@@ -11,6 +11,7 @@ export const DEFAULT_BOX_DEBUG_SETTINGS = Object.freeze({
   showTrails: false,
   lapConfidenceThreshold: 0.15,
   lapCooldownSeconds: 10,
+  maxDetectionDistancePerSecond: 0.07,
 });
 
 function storageOrNull(storage) {
@@ -41,6 +42,9 @@ export function normalizeBoxDebugSettings(value) {
     lapCooldownSeconds: Number.isFinite(Number(value?.lapCooldownSeconds))
       && Number(value.lapCooldownSeconds) >= 0 ? Number(value.lapCooldownSeconds)
       : DEFAULT_BOX_DEBUG_SETTINGS.lapCooldownSeconds,
+    maxDetectionDistancePerSecond: Number.isFinite(Number(value?.maxDetectionDistancePerSecond))
+      && Number(value.maxDetectionDistancePerSecond) > 0 && Number(value.maxDetectionDistancePerSecond) <= 1
+      ? Number(value.maxDetectionDistancePerSecond) : DEFAULT_BOX_DEBUG_SETTINGS.maxDetectionDistancePerSecond,
   };
 }
 
