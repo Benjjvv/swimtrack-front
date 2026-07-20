@@ -76,6 +76,62 @@
   </div>
 
 </div>
+
+<!-- Modal de onboarding: registrar nadadores antes de iniciar cámara/video -->
+<div class="modal fade" id="onboardingModal" tabindex="-1" aria-labelledby="onboardingTitle"
+     aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title h5" id="onboardingTitle">
+          <i class="bi bi-person-plus me-2"></i>Antes de empezar, registrá los nadadores
+        </h2>
+      </div>
+      <div class="modal-body">
+        <div class="row g-2 align-items-end mb-2">
+          <div class="col-12 col-sm">
+            <label class="form-label small mb-1" for="onbName">Nombre</label>
+            <input type="text" class="form-control form-control-sm" id="onbName" placeholder="Nombre del nadador">
+          </div>
+          <div class="col-4 col-sm-3">
+            <label class="form-label small mb-1" for="onbAge">Edad</label>
+            <input type="number" min="1" class="form-control form-control-sm" id="onbAge" placeholder="—">
+          </div>
+          <div class="col-8 col-sm-4">
+            <label class="form-label small mb-1" for="onbLevel">Nivel</label>
+            <select class="form-select form-select-sm" id="onbLevel">
+              <option value="principiante">Principiante</option>
+              <option value="intermedio" selected>Intermedio</option>
+              <option value="avanzado">Avanzado</option>
+            </select>
+          </div>
+        </div>
+        <div class="d-flex gap-2 mb-3">
+          <button type="button" class="btn btn-sm btn-primary" id="onbAddBtn">
+            <i class="bi bi-plus-lg"></i> Agregar
+          </button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="onbAnonBtn">
+            <i class="bi bi-incognito"></i> Anónimo
+          </button>
+        </div>
+
+        <div id="onbSavedWrap" class="mb-3 d-none">
+          <div class="small text-muted mb-1">O elegí de tus nadadores guardados:</div>
+          <div id="onbSavedList" class="d-flex flex-wrap gap-1"></div>
+        </div>
+
+        <div class="small text-muted mb-1">En esta sesión:</div>
+        <div id="onbSessionList" class="d-flex flex-column gap-1"></div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+        <button type="button" class="btn btn-success" id="onbStartBtn" disabled>
+          <i class="bi bi-check-lg"></i> Empezar
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
