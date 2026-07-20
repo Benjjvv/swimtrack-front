@@ -7,34 +7,17 @@ import { Stopwatch } from './lib/stopwatch.js';
 import { initCameraPanel } from './lib/camera-panel.js';
 import { showToast } from './lib/toast.js';
 
-// --- Datos de demo (se usan si no hay nadadores registrados) ---
-const DEMO_SWIMMERS = [
-  { id: 'demo-1', name: 'Ana', age: 24, level: 'avanzado' },
-  { id: 'demo-2', name: 'Beto', age: 19, level: 'intermedio' },
-  { id: 'demo-3', name: 'Caro', age: 16, level: 'principiante' },
-  { id: 'demo-4', name: 'Dani', age: 28, level: 'avanzado' },
-];
-const DEMO_LANES = [
-  { id: 'demo-lane-1', name: 'Pista 1', swimmerIds: ['demo-1', 'demo-2'] },
-  { id: 'demo-lane-2', name: 'Pista 2', swimmerIds: ['demo-3', 'demo-4'] },
-];
-
 // --- Estado ---
-const storedSwimmers = getItem(KEYS.SWIMMERS, []);
-const demoMode = storedSwimmers.length === 0;
-
+// Sin datos demo: si no hay nadadores registrados, el monitor arranca vacío.
+// El onboarding (modal) los registrará antes de iniciar cámara o subir video.
 /** @type {{id:string,name:string}[]} */
-let swimmers = demoMode ? DEMO_SWIMMERS : storedSwimmers;
+let swimmers = getItem(KEYS.SWIMMERS, []);
 /** @type {{id:string,name:string,swimmerIds:string[]}[]} */
-let lanes;
-if (demoMode) {
-  lanes = DEMO_LANES.map((l) => ({ ...l, swimmerIds: [...l.swimmerIds] }));
-} else {
-  lanes = getItem(KEYS.LANES, []);
-  if (lanes.length === 0) {
-    lanes = [{ id: generateId(), name: 'Pista 1', swimmerIds: swimmers.map((s) => s.id) }];
-    setItem(KEYS.LANES, lanes);
-  }
+let lanes = getItem(KEYS.LANES, []);
+// Si ya hay nadadores registrados pero ninguna pista, sembrar "Pista 1" con todos.
+if (swimmers.length > 0 && lanes.length === 0) {
+  lanes = [{ id: generateId(), name: 'Pista 1', swimmerIds: swimmers.map((s) => s.id) }];
+  setItem(KEYS.LANES, lanes);
 }
 
 /** Cronómetros vivos por nadador-en-pista. clave = `laneId::swimmerId`. @type {Map<string,Stopwatch>} */
@@ -79,7 +62,7 @@ function disposeControl(key) {
 }
 
 function persistLanes() {
-  if (!demoMode) setItem(KEYS.LANES, lanes);
+  setItem(KEYS.LANES, lanes);
 }
 
 // --- Operaciones: pistas ---
@@ -282,6 +265,19 @@ lanesContainer.addEventListener('click', (e) => {
     case 'remove-swimmer': return removeSwimmerFromLane(ctrl.dataset.lane, ctrl.dataset.swimmer);
     case 'save': return saveSession(ctrl.dataset.lane, ctrl.dataset.swimmer);
   }
+});
+
+// Onboarding: cuando el modal registra nadadores, reflejarlos en el panel derecho.
+window.addEventListener('swimtrack:swimmers-registered', (e) => {
+  swimmers = getItem(KEYS.SWIMMERS, []);
+  const sessionIds = (e.detail || []).map((s) => s.id);
+  if (lanes.length === 0) {
+    lanes = [{ id: generateId(), name: 'Pista 1', swimmerIds: [...sessionIds] }];
+  } else {
+    sessionIds.forEach((id) => { if (!lanes[0].swimmerIds.includes(id)) lanes[0].swimmerIds.push(id); });
+  }
+  persistLanes();
+  render();
 });
 
 // Primer render.
