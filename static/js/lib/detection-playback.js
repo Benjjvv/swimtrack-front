@@ -259,6 +259,7 @@ export class DetectionPlayback {
       'lap_confidence_threshold',
       String(getBoxDebugSettings().lapConfidenceThreshold),
     );
+    form.append('lap_cooldown_seconds', String(getBoxDebugSettings().lapCooldownSeconds));
     const abort = new AbortController();
     this._abort = abort;
     try {

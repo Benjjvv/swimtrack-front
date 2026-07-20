@@ -10,6 +10,7 @@ export const DEFAULT_BOX_DEBUG_SETTINGS = Object.freeze({
   showCenters: false,
   showTrails: false,
   lapConfidenceThreshold: 0.15,
+  lapCooldownSeconds: 10,
 });
 
 function storageOrNull(storage) {
@@ -37,6 +38,9 @@ export function normalizeBoxDebugSettings(value) {
     lapConfidenceThreshold: Number.isFinite(lapConfidenceThreshold)
       && lapConfidenceThreshold >= 0 && lapConfidenceThreshold <= 1
       ? lapConfidenceThreshold : DEFAULT_BOX_DEBUG_SETTINGS.lapConfidenceThreshold,
+    lapCooldownSeconds: Number.isFinite(Number(value?.lapCooldownSeconds))
+      && Number(value.lapCooldownSeconds) >= 0 ? Number(value.lapCooldownSeconds)
+      : DEFAULT_BOX_DEBUG_SETTINGS.lapCooldownSeconds,
   };
 }
 

@@ -45,9 +45,11 @@ class LapEpisodeReducer:
     episodios, pero no produce una clasificación positiva.
     """
 
-    def __init__(self, threshold: float | None) -> None:
+    def __init__(self, threshold: float | None, cooldown_seconds: float = 10.0) -> None:
         self.threshold = self._normalize_threshold(threshold)
+        self.cooldown_seconds = self._normalize_cooldown(cooldown_seconds)
         self._episodes: dict[tuple[str, int | None, int], _Episode] = {}
+        self._last_decision_ms_by_lane: dict[str, float] = {}
 
     def observe(self, lap_scores: Any) -> list[dict[str, Any]]:
         """Incorpora los scores de un frame y retorna nuevas decisiones shadow."""
@@ -81,11 +83,27 @@ class LapEpisodeReducer:
                 self.threshold is not None
                 and not episode.decision_emitted
                 and episode.lap_score >= self.threshold
+                and self._cooldown_elapsed(episode)
             ):
                 episode.decision_emitted = True
+                self._last_decision_ms_by_lane[episode.lane_id] = episode.candidate_time_ms
                 decisions.append(self._shadow_decision(episode))
 
         return decisions
+
+    def _cooldown_elapsed(self, episode: _Episode) -> bool:
+        previous = self._last_decision_ms_by_lane.get(episode.lane_id)
+        return previous is None or episode.candidate_time_ms - previous >= self.cooldown_seconds * 1000.0
+
+    @staticmethod
+    def _normalize_cooldown(value: float | str) -> float:
+        try:
+            cooldown = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("El cooldown de largos debe ser un número.") from exc
+        if not math.isfinite(cooldown) or cooldown < 0:
+            raise ValueError("El cooldown de largos debe ser un número mayor o igual a cero.")
+        return cooldown
 
     def snapshot(self) -> list[dict[str, Any]]:
         """Devuelve el máximo final de cada episodio para logs y tests."""

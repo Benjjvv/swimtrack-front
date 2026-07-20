@@ -106,6 +106,7 @@ def _sse_detect(
     *,
     lap_episode_mode="shadow",
     lap_confidence_threshold=None,
+    lap_cooldown_seconds=10.0,
     logger=_LOGGER,
     request_started=None,
     upload_save_ms=None,
@@ -122,7 +123,7 @@ def _sse_detect(
     if lap_episode_mode not in {"off", "shadow"}:
         raise ValueError("LAP_EPISODE_MODE debe ser off o shadow.")
     reducer = (
-        LapEpisodeReducer(lap_confidence_threshold)
+        LapEpisodeReducer(lap_confidence_threshold, lap_cooldown_seconds)
         if lap_episode_mode == "shadow"
         else None
     )
@@ -247,9 +248,10 @@ def create_app(config_overrides=None, detector=None):
     if lap_episode_mode not in {"off", "shadow"}:
         raise ValueError("LAP_EPISODE_MODE debe ser off o shadow.")
     lap_confidence_threshold = app.config.get("LAP_CONFIDENCE_THRESHOLD")
+    lap_cooldown_seconds = app.config.get("LAP_COOLDOWN_SECONDS", 10.0)
     if lap_episode_mode == "shadow":
         # Valida la configuración al iniciar, antes de abrir un response SSE.
-        LapEpisodeReducer(lap_confidence_threshold)
+        LapEpisodeReducer(lap_confidence_threshold, lap_cooldown_seconds)
 
     # El adaptador no abre red ni decodifica video al construirse. Se conserva
     # en extensions para reutilizar configuración y permitir reemplazarlo en tests.
@@ -305,12 +307,21 @@ def create_app(config_overrides=None, detector=None):
             ), 400
 
         effective_lap_confidence_threshold = lap_confidence_threshold
+        effective_lap_cooldown_seconds = lap_cooldown_seconds
         request_lap_confidence_threshold = request.form.get("lap_confidence_threshold")
         if request_lap_confidence_threshold is not None:
             try:
                 effective_lap_confidence_threshold = LapEpisodeReducer(
                     request_lap_confidence_threshold
                 ).threshold
+            except ValueError as exc:
+                return jsonify({"ok": False, "error": str(exc)}), 400
+        request_lap_cooldown_seconds = request.form.get("lap_cooldown_seconds")
+        if request_lap_cooldown_seconds is not None:
+            try:
+                effective_lap_cooldown_seconds = LapEpisodeReducer(
+                    effective_lap_confidence_threshold, request_lap_cooldown_seconds
+                ).cooldown_seconds
             except ValueError as exc:
                 return jsonify({"ok": False, "error": str(exc)}), 400
 
@@ -349,6 +360,7 @@ def create_app(config_overrides=None, detector=None):
                     app.extensions["swimmer_detector"],
                     lap_episode_mode=lap_episode_mode,
                     lap_confidence_threshold=effective_lap_confidence_threshold,
+                    lap_cooldown_seconds=effective_lap_cooldown_seconds,
                     logger=app.logger,
                     request_started=request_started,
                     upload_save_ms=upload_save_ms,
