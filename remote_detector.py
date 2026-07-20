@@ -526,6 +526,11 @@ class RemoteSwimmerDetector:
             "height": int(height),
             "boxes": [self._normalize_box(box) for box in boxes],
         }
+        identity_summary = payload.get("identity_summary")
+        if identity_summary is not None:
+            normalized_frame["identity_summary"] = self._normalize_identity_summary(
+                identity_summary
+            )
         lap_scores = payload.get("lap_scores")
         if lap_scores is not None:
             if not isinstance(lap_scores, list):
@@ -1003,6 +1008,11 @@ class RemoteSwimmerDetector:
                 "height": expected.original_height,
                 "boxes": [self._normalize_box(box) for box in boxes],
             }
+            identity_summary = result.get("identity_summary")
+            if identity_summary is not None:
+                normalized_frame["identity_summary"] = self._normalize_identity_summary(
+                    identity_summary
+                )
             lap_scores = result.get("lap_scores")
             if lap_scores is not None:
                 if not isinstance(lap_scores, list):
@@ -1021,14 +1031,14 @@ class RemoteSwimmerDetector:
         return normalized
 
     @staticmethod
-    def _normalize_box(box: Any) -> dict[str, int | float]:
+    def _normalize_box(box: Any) -> dict[str, Any]:
         if not isinstance(box, dict):
             raise RemoteDetectorError("La respuesta IA contiene una bbox inválida.")
         required = ("id", "x1", "y1", "x2", "y2", "conf")
         if any(key not in box for key in required):
             raise RemoteDetectorError("La respuesta IA contiene una bbox incompleta.")
         try:
-            return {
+            normalized: dict[str, Any] = {
                 "id": int(box["id"]),
                 "x1": float(box["x1"]),
                 "y1": float(box["y1"]),
@@ -1040,6 +1050,43 @@ class RemoteSwimmerDetector:
             raise RemoteDetectorError(
                 "La respuesta IA contiene valores de bbox inválidos."
             ) from exc
+        lane_id = box.get("lane_id")
+        if lane_id is not None:
+            if not isinstance(lane_id, str) or not lane_id:
+                raise RemoteDetectorError("La respuesta IA contiene un lane_id de bbox inválido.")
+            normalized["lane_id"] = lane_id
+        for field in ("track_id", "identity_id"):
+            value = box.get(field)
+            if value is None:
+                continue
+            if not RemoteSwimmerDetector._is_integer(value) or value < 1:
+                raise RemoteDetectorError(
+                    f"La respuesta IA contiene {field} de bbox inválido."
+                )
+            normalized[field] = int(value)
+        return normalized
+
+    @staticmethod
+    def _normalize_identity_summary(summary: Any) -> dict[str, int]:
+        if not isinstance(summary, dict):
+            raise RemoteDetectorError("La respuesta IA contiene identity_summary inválido.")
+        required = ("confirmed_count", "active_count")
+        if any(field not in summary for field in required):
+            raise RemoteDetectorError("La respuesta IA contiene identity_summary incompleto.")
+        confirmed_count = summary["confirmed_count"]
+        active_count = summary["active_count"]
+        if (
+            not RemoteSwimmerDetector._is_integer(confirmed_count)
+            or confirmed_count < 0
+            or not RemoteSwimmerDetector._is_integer(active_count)
+            or active_count < 0
+            or active_count > confirmed_count
+        ):
+            raise RemoteDetectorError("La respuesta IA contiene identity_summary inválido.")
+        return {
+            "confirmed_count": int(confirmed_count),
+            "active_count": int(active_count),
+        }
 
     @staticmethod
     def _normalize_lap_score(score: Any) -> dict[str, Any]:
@@ -1113,6 +1160,11 @@ class RemoteSwimmerDetector:
                     normalized[field] = unit_value(score[field], field)
             if score.get("track_id") is not None:
                 normalized["track_id"] = int(score["track_id"])
+            if score.get("identity_id") is not None:
+                raw_identity_id = score["identity_id"]
+                if not RemoteSwimmerDetector._is_integer(raw_identity_id) or raw_identity_id < 1:
+                    raise ValueError("identity_id must be a positive integer")
+                normalized["identity_id"] = int(raw_identity_id)
             if score.get("candidate_time_ms") is not None:
                 normalized["candidate_time_ms"] = float(score["candidate_time_ms"])
             if score.get("candidate_episode_id") is not None:

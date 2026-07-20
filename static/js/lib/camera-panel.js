@@ -32,6 +32,7 @@ export function initCameraPanel() {
   const loadingLabelEl = document.getElementById('detectionLoadingLabel');
   const loadingDetailEl = document.getElementById('detectionLoadingDetail');
   const countEl = document.getElementById('detectionCount');
+  const countLabelEl = document.getElementById('detectionCountLabel');
   const lapCountEl = document.getElementById('lapCount');
   const currentLengthEl = document.getElementById('currentLength');
   const startBtn = document.getElementById('startCameraBtn');
@@ -50,6 +51,9 @@ export function initCameraPanel() {
       ? Math.max(0, Number(lapCount)) : 0;
     setLapCount(normalizedLapCount);
     if (currentLengthEl) currentLengthEl.textContent = String(normalizedLapCount + 1);
+  }
+  function setCountLabel(label) {
+    if (countLabelEl) countLabelEl.textContent = label;
   }
   function setDetectionLoading(isBuffering) {
     if (!loadingEl) return;
@@ -111,6 +115,7 @@ export function initCameraPanel() {
     resetDetectionOverlayState(overlay);
     clearCanvas(canvas);
     setCount(0);
+    setCountLabel('persona(s) detectada(s)');
     setLapProgress(0);
   }
 
@@ -121,6 +126,7 @@ export function initCameraPanel() {
       img.classList.add('d-none');
       video.classList.remove('d-none');
       await camera.start(video);
+      setCountLabel('persona(s) visible(s)');
       stopBtn.classList.remove('d-none');
       // Cargar el modelo puede tardar unos segundos la primera vez.
       const model = await loadCocoSsd();
@@ -140,6 +146,7 @@ export function initCameraPanel() {
     reset();
     placeholder.classList.add('d-none');
     img.classList.remove('d-none');
+    setCountLabel('persona(s) visible(s)');
     drawLocalDetections(img, DEMO_DETECTIONS);
     setCount(DEMO_DETECTIONS.length);
   }
@@ -152,6 +159,7 @@ export function initCameraPanel() {
       img.classList.add('d-none');
       video.classList.remove('d-none');
       objectUrl = URL.createObjectURL(file);
+      setCountLabel('persona(s) identificada(s)');
       stopBtn.classList.remove('d-none');
       const detectUrl = (fileInput && fileInput.dataset.detectUrl) || '/api/detect';
       await playback.start(objectUrl, file, detectUrl);

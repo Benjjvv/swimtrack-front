@@ -87,6 +87,7 @@ class FakeVisionClient:
         *,
         transient_first_batch=False,
         include_lap_scores=False,
+        include_identity_data=False,
         tracking_diagnostics_payload=None,
         timing_headers=None,
         video_lines=None,
@@ -98,6 +99,7 @@ class FakeVisionClient:
         self.kwargs = kwargs
         self.transient_first_batch = transient_first_batch
         self.include_lap_scores = include_lap_scores
+        self.include_identity_data = include_identity_data
         self.tracking_diagnostics_payload = tracking_diagnostics_payload
         self.timing_headers = timing_headers or {}
         self.video_lines = list(video_lines or [])
@@ -174,6 +176,14 @@ class FakeVisionClient:
                         },
                     }
                 ]
+            if self.include_identity_data:
+                response_frame["boxes"][0].update(
+                    {"lane_id": "center", "track_id": 7, "identity_id": 1}
+                )
+                response_frame["identity_summary"] = {
+                    "confirmed_count": 1,
+                    "active_count": 1,
+                }
             if self.tracking_diagnostics_payload is not None:
                 response_frame["tracking_diagnostics"] = (
                     self.tracking_diagnostics_payload
@@ -263,6 +273,7 @@ def _build_detector(
     transient_first_batch=False,
     lap_calibration_id=None,
     include_lap_scores=False,
+    include_identity_data=False,
     tracking_diagnostics="none",
     tracking_diagnostics_payload=None,
     timing_headers=None,
@@ -284,6 +295,7 @@ def _build_detector(
     client = client_class(
         transient_first_batch=transient_first_batch,
         include_lap_scores=include_lap_scores,
+        include_identity_data=include_identity_data,
         tracking_diagnostics_payload=tracking_diagnostics_payload,
         timing_headers=timing_headers,
         video_lines=video_lines,
@@ -349,6 +361,41 @@ def test_stream_sends_sequential_batches_and_normalizes_results(monkeypatch):
     assert client.deleted == ["http://vision.test/v1/tracking-sessions/session-1"]
 
 
+def test_stream_preserves_canonical_identity_fields(monkeypatch):
+    detector, _capture, _client = _build_detector(monkeypatch, include_identity_data=True)
+
+    results = list(detector.stream("video.mp4"))
+
+    assert results[0]["boxes"] == [
+        {
+            "id": 7,
+            "x1": 1.0,
+            "y1": 2.0,
+            "x2": 10.0,
+            "y2": 12.0,
+            "conf": 0.9,
+            "lane_id": "center",
+            "track_id": 7,
+            "identity_id": 1,
+        }
+    ]
+    assert results[0]["identity_summary"] == {"confirmed_count": 1, "active_count": 1}
+
+
+@pytest.mark.parametrize(
+    "summary",
+    (
+        {"confirmed_count": -1, "active_count": 0},
+        {"confirmed_count": 1, "active_count": 2},
+        {"confirmed_count": True, "active_count": 0},
+        {"confirmed_count": 1},
+    ),
+)
+def test_identity_summary_rejects_invalid_counts(summary):
+    with pytest.raises(remote_detector.RemoteDetectorError, match="identity_summary"):
+        RemoteSwimmerDetector._normalize_identity_summary(summary)
+
+
 def test_stream_samples_high_fps_and_preserves_source_timestamps(monkeypatch):
     detector, _capture, client = _build_detector(
         monkeypatch,
@@ -389,6 +436,9 @@ def test_video_transport_uploads_original_once_and_streams_ndjson(
                     "boxes": [
                         {
                             "id": 7,
+                            "track_id": 7,
+                            "identity_id": 1,
+                            "lane_id": "center",
                             "x1": 1,
                             "y1": 2,
                             "x2": 10,
@@ -396,6 +446,7 @@ def test_video_transport_uploads_original_once_and_streams_ndjson(
                             "conf": 0.9,
                         }
                     ],
+                    "identity_summary": {"confirmed_count": 1, "active_count": 1},
                 }
             ),
             json.dumps(
@@ -420,6 +471,9 @@ def test_video_transport_uploads_original_once_and_streams_ndjson(
             "boxes": [
                 {
                     "id": 7,
+                    "track_id": 7,
+                    "identity_id": 1,
+                    "lane_id": "center",
                     "x1": 1.0,
                     "y1": 2.0,
                     "x2": 10.0,
@@ -427,6 +481,7 @@ def test_video_transport_uploads_original_once_and_streams_ndjson(
                     "conf": 0.9,
                 }
             ],
+            "identity_summary": {"confirmed_count": 1, "active_count": 1},
         },
         {"time": pytest.approx(1 / 15), "width": 1920, "height": 1080, "boxes": []},
     ]

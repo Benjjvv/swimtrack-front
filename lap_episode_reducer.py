@@ -10,6 +10,7 @@ from typing import Any
 @dataclass
 class _Episode:
     lane_id: str
+    identity_id: int | None
     candidate_episode_id: int
     lap_score: float
     candidate_time_ms: float
@@ -26,6 +27,8 @@ class _Episode:
             "score_version": self.score_version,
             "decision_emitted": self.decision_emitted,
         }
+        if self.identity_id is not None:
+            state["identity_id"] = self.identity_id
         if self.endpoint is not None:
             state["endpoint"] = self.endpoint
         return state
@@ -35,14 +38,16 @@ class LapEpisodeReducer:
     """Mantiene un máximo y emite a lo sumo una decisión por episodio.
 
     La instancia debe pertenecer a un único request/video. Por eso la key interna
-    sólo necesita ``(lane_id, candidate_episode_id)`` y nunca mezcla sesiones.
+    necesita ``(lane_id, identity_id, candidate_episode_id)`` y nunca mezcla
+    sesiones. ``identity_id`` es opcional para conservar el contrato de IA
+    anterior, que sólo tenía una trayectoria por carril.
     Si ``threshold`` es ``None``, el reducer conserva y permite auditar los
     episodios, pero no produce una clasificación positiva.
     """
 
     def __init__(self, threshold: float | None) -> None:
         self.threshold = self._normalize_threshold(threshold)
-        self._episodes: dict[tuple[str, int], _Episode] = {}
+        self._episodes: dict[tuple[str, int | None, int], _Episode] = {}
 
     def observe(self, lap_scores: Any) -> list[dict[str, Any]]:
         """Incorpora los scores de un frame y retorna nuevas decisiones shadow."""
@@ -57,7 +62,11 @@ class LapEpisodeReducer:
             if observation is None:
                 continue
 
-            key = (observation.lane_id, observation.candidate_episode_id)
+            key = (
+                observation.lane_id,
+                observation.identity_id,
+                observation.candidate_episode_id,
+            )
             episode = self._episodes.get(key)
             if episode is None:
                 episode = observation
@@ -82,7 +91,10 @@ class LapEpisodeReducer:
         """Devuelve el máximo final de cada episodio para logs y tests."""
         return [
             self._episodes[key].public_state()
-            for key in sorted(self._episodes, key=lambda item: (item[0], item[1]))
+            for key in sorted(
+                self._episodes,
+                key=lambda item: (item[0], -1 if item[1] is None else item[1], item[2]),
+            )
         ]
 
     def _shadow_decision(self, episode: _Episode) -> dict[str, Any]:
@@ -118,6 +130,13 @@ class LapEpisodeReducer:
         lane_id = score.get("lane_id")
         if not isinstance(lane_id, str) or not lane_id:
             raise ValueError("lane_id debe ser un string no vacío.")
+        raw_identity_id = score.get("identity_id")
+        if raw_identity_id is not None and (
+            not isinstance(raw_identity_id, int)
+            or isinstance(raw_identity_id, bool)
+            or raw_identity_id < 1
+        ):
+            raise ValueError("identity_id debe ser un entero positivo.")
         if (
             not isinstance(raw_episode_id, int)
             or isinstance(raw_episode_id, bool)
@@ -140,6 +159,7 @@ class LapEpisodeReducer:
 
         return _Episode(
             lane_id=lane_id,
+            identity_id=raw_identity_id,
             candidate_episode_id=raw_episode_id,
             lap_score=lap_score,
             candidate_time_ms=candidate_time_ms,

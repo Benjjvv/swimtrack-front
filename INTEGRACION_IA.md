@@ -14,7 +14,7 @@ Browser ← SSE por frame      ← Flask ← JSON por batch (`frames`) o NDJSON 
 3. En modo `frames`, el Front conserva timestamps y dimensiones originales, muestrea el video hasta `VISION_MAX_FPS`, redimensiona cada frame seleccionado a 640×640 y lo comprime como JPEG. El FPS muestreado se entrega a ByteTrack para conservar sus tiempos de retención.
 4. En modo `frames`, los frames seleccionados se agrupan según `VISION_BATCH_SIZE`. Un productor local puede preparar hasta `VISION_PREPARED_BATCH_QUEUE_SIZE` batches JPEG mientras el consumidor espera la respuesta anterior, pero los envía secuencialmente a `POST /v1/tracking-sessions/{session_id}/batches`.
 5. En modo `video`, el Front envía una vez el archivo original a `POST /v1/tracking-sessions/{session_id}/video` con el campo `sample_fps`. El servicio GPU hace decode y sampling, procesa los frames en orden y emite un `FrameResult` NDJSON por línea. Ese request no se reintenta: el endpoint avanza ByteTrack y todavía no expone un identificador idempotente equivalente a `batch_id`.
-6. Flask convierte `time_ms` a segundos, agrega el conteo acumulado de IDs y emite el evento SSE `{time,width,height,boxes,count,lap_scores?,tracking_diagnostics?,lap_decisions?}`. Un reducer local al request agrupa los candidatos por `(lane_id, candidate_episode_id)`, conserva el score máximo y, cuando hay un threshold configurado, publica a lo sumo una decisión shadow por episodio sin modificar `count`.
+6. Flask convierte `time_ms` a segundos, conserva `identity_summary` y emite el evento SSE `{time,width,height,boxes,identity_summary?,count,lap_scores?,tracking_diagnostics?,lap_decisions?}`. `count` continúa siendo el acumulado legacy de claves de caja/tracklets; la UI de personas usa `identity_summary.confirmed_count`. Un reducer local al request agrupa los candidatos por `(lane_id, identity_id, candidate_episode_id)`, conserva el score máximo y, cuando hay un threshold configurado, publica a lo sumo una decisión shadow por episodio sin modificar `count`.
 7. Al terminar, fallar o desconectarse el navegador, Flask cierra la sesión remota y elimina el archivo temporal. El TTL del servicio IA cubre una caída total de red durante el cleanup.
 
 ## Contrato del servicio IA
@@ -47,10 +47,12 @@ El request es `multipart/form-data`, con un campo repetido `frames` por cada JPE
 Respuesta `200`:
 
 ```json
-{"session_id":"7bca...","batch_id":"2c53...","sequence":0,"next_sequence":1,"frames":[{"frame_index":0,"time_ms":0.0,"width":1080,"height":1080,"boxes":[{"id":1,"x1":100.0,"y1":50.0,"x2":180.0,"y2":250.0,"conf":0.91,"class_id":0}]}]}
+{"session_id":"7bca...","batch_id":"2c53...","sequence":0,"next_sequence":1,"frames":[{"frame_index":0,"time_ms":0.0,"width":1080,"height":1080,"boxes":[{"id":1,"track_id":1,"identity_id":1,"lane_id":"center","x1":100.0,"y1":50.0,"x2":180.0,"y2":250.0,"conf":0.91,"class_id":0}],"identity_summary":{"confirmed_count":1,"active_count":1}}]}
 ```
 
 `width`, `height` y las bboxes siempre corresponden a las dimensiones originales, aunque el JPEG enviado mida 640×640.
+
+`track_id` es el identificador efímero de ByteTrack y puede cambiar durante un mismo nado. `identity_id` es estable dentro de la sesión y representa a una persona física; puede aparecer en cajas tentativas antes de que cuente. `identity_summary.confirmed_count` cuenta sólo identidades confirmadas, es acumulado durante el video y es el valor que usa el contador del Monitor. `active_count` indica cuántas de esas identidades están visibles en el frame. Si una caja proviene sólo del detector, `track_id` se omite y `id` usa una clave negativa estable de compatibilidad.
 
 ### Procesar video original (`VISION_TRANSPORT=video`)
 
@@ -67,10 +69,10 @@ sample_fps=15.0
 La respuesta `200` usa `Content-Type: application/x-ndjson` y emite un objeto JSON completo por línea, siempre en orden creciente de `frame_index` y `time_ms`:
 
 ```json
-{"frame_index":0,"time_ms":0.0,"width":1080,"height":1080,"boxes":[{"id":1,"x1":100.0,"y1":50.0,"x2":180.0,"y2":250.0,"conf":0.91,"class_id":0}]}
+{"frame_index":0,"time_ms":0.0,"width":1080,"height":1080,"boxes":[{"id":1,"track_id":1,"identity_id":1,"lane_id":"center","x1":100.0,"y1":50.0,"x2":180.0,"y2":250.0,"conf":0.91,"class_id":0}],"identity_summary":{"confirmed_count":1,"active_count":1}}
 ```
 
-El Front valida el orden, normaliza la bbox y convierte `time_ms` a segundos antes de emitir SSE. Si se habilitan, `lap_scores` y `tracking_diagnostics` usan exactamente el mismo contrato que el transporte por batches.
+El Front valida el orden, normaliza la bbox y convierte `time_ms` a segundos antes de emitir SSE. `identity_summary`, `identity_id` y `track_id` se preservan en ambos transportes. Si se habilitan, `lap_scores` y `tracking_diagnostics` usan exactamente el mismo contrato que el transporte por batches.
 
 ### Diagnostics de tracking
 
@@ -119,7 +121,7 @@ En `frames` se reintentan errores de transporte y HTTP `408`, `425`, `429`, `500
 
 ## Reducer de episodios en shadow mode
 
-Cada request de video construye una instancia nueva del reducer, por lo que sesiones concurrentes y videos consecutivos no comparten estado. La key de episodio dentro de esa sesión es `(lane_id, candidate_episode_id)`. Las observaciones repetidas actualizan el máximo interno junto con su `candidate_time_ms`, pero el cruce del threshold genera como máximo un `lap_decisions`:
+Cada request de video construye una instancia nueva del reducer, por lo que sesiones concurrentes y videos consecutivos no comparten estado. La key de episodio dentro de esa sesión es `(lane_id, identity_id, candidate_episode_id)`; `identity_id` es opcional sólo para compatibilidad con una AI anterior. Las observaciones repetidas actualizan el máximo interno junto con su `candidate_time_ms`, pero el cruce del threshold genera como máximo un `lap_decisions`:
 
 ```json
 {"lane_id":"center","candidate_episode_id":3,"candidate_time_ms":45200.0,"lap_score":0.072141,"score_version":"trajectory-v5","endpoint":"far","predicted_label":"lap","threshold":0.05,"mode":"shadow","would_increment_lap_count":true,"lap_count_incremented":false}
@@ -174,4 +176,4 @@ curl --no-buffer --fail-with-body \
   http://127.0.0.1:7001/api/detect
 ```
 
-La prueba es exitosa si `/readyz` indica que el backend está listo, `/api/detect` emite un evento por frame sin `event: error`, las bboxes respetan las dimensiones originales y los IDs se mantienen entre frames consecutivos. También puedes subir el mismo video desde la UI. Un error remoto aparecerá como evento SSE y el panel lo mostrará aunque el status HTTP del stream ya haya comenzado.
+La prueba es exitosa si `/readyz` indica que el backend está listo, `/api/detect` emite un evento por frame sin `event: error`, las bboxes respetan las dimensiones originales y el `identity_id` se mantiene aunque ByteTrack cambie `track_id`. También puedes subir el mismo video desde la UI. Un error remoto aparecerá como evento SSE y el panel lo mostrará aunque el status HTTP del stream ya haya comenzado.

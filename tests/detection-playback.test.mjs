@@ -139,6 +139,17 @@ function movingFrame(time, x) {
   };
 }
 
+function canonicalMovingFrame(time, x, rawId) {
+  return {
+    time,
+    width: 640,
+    height: 640,
+    count: rawId,
+    identity_summary: { confirmed_count: 1, active_count: 1 },
+    boxes: [{ id: rawId, identity_id: 1, x1: x, y1: 20, x2: x + 60, y2: 120, conf: 0.9 }],
+  };
+}
+
 function lapFrame(time, episodeId) {
   return {
     ...frame(time),
@@ -242,9 +253,9 @@ test('resets people and lap counters when the video repeats', () => {
     lapCounts.push(count);
   });
   playback.frames = [
-    { ...frame(0), count: 1 },
-    { ...lapFrame(0.5, 3), count: 2 },
-    { ...lapFrame(1, 4), count: 3 },
+    { ...frame(0), count: 1, identity_summary: { confirmed_count: 1, active_count: 1 } },
+    { ...lapFrame(0.5, 3), count: 2, identity_summary: { confirmed_count: 2, active_count: 2 } },
+    { ...lapFrame(1, 4), count: 3, identity_summary: { confirmed_count: 3, active_count: 3 } },
   ];
 
   playback._renderAt(0.1);
@@ -253,6 +264,68 @@ test('resets people and lap counters when the video repeats', () => {
 
   assert.deepEqual(peopleCounts, [1, 3, 0, 1]);
   assert.deepEqual(lapCounts, [0, 2, 0, 0]);
+});
+
+test('uses canonical people counts instead of fragmented ByteTrack IDs', () => {
+  const video = new FakeVideo();
+  const canvas = fakeCanvas();
+  const peopleCounts = [];
+  const playback = new DetectionPlayback(video, canvas, (count) => {
+    peopleCounts.push(count);
+  });
+  playback.frames = [
+    {
+      ...frame(0),
+      count: 18,
+      identity_summary: { confirmed_count: 1, active_count: 1 },
+    },
+    {
+      ...frame(1),
+      count: 99,
+      boxes: [
+        { id: 41, x1: 20, y1: 20, x2: 80, y2: 120, conf: 0.9 },
+        { id: 42, x1: 120, y1: 20, x2: 180, y2: 120, conf: 0.9 },
+      ],
+    },
+  ];
+
+  playback._renderAt(0);
+  playback._renderAt(1);
+
+  assert.deepEqual(peopleCounts, [1, 2]);
+});
+
+test('interpolates across a raw tracklet change when the canonical identity is stable', () => {
+  const video = new FakeVideo();
+  const canvas = fakeCanvas();
+  const playback = new DetectionPlayback(video, canvas);
+
+  const interpolated = playback._interpolateFrame(
+    canonicalMovingFrame(0, 0, 3),
+    canonicalMovingFrame(0.2, 100, 19),
+    0.1,
+  );
+
+  assert.equal(interpolated.boxes[0].id, 3);
+  assert.equal(interpolated.boxes[0].identity_id, 1);
+  assert.equal(interpolated.boxes[0].x1, 50);
+});
+
+test('counts independent lap episodes for two canonical identities in one lane', () => {
+  const video = new FakeVideo();
+  const canvas = fakeCanvas();
+  const playback = new DetectionPlayback(video, canvas);
+  playback.frames = [
+    {
+      ...frame(0),
+      lap_decisions: [
+        { lane_id: 'center', identity_id: 1, candidate_episode_id: 1 },
+        { lane_id: 'center', identity_id: 2, candidate_episode_id: 1 },
+      ],
+    },
+  ];
+
+  assert.equal(playback._lapCountAt(0), 2);
 });
 
 test('renders using presented mediaTime and interpolates a stable tracked box', async () => {

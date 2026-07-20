@@ -112,9 +112,12 @@ def _sse_detect(
 ):
     """Generador SSE: un evento por frame siguiendo el contrato de datos.
 
-    `count` = nº de IDs únicos acumulados hasta ese frame; lo calcula el BACK
-    (no el detector), acumulando los ids que va viendo. El video temporal se
-    borra al terminar el stream o si algo falla (finally).
+    `count` conserva el contrato legacy: nº de IDs de caja únicos acumulados
+    hasta ese frame (tracklets crudos cuando ByteTrack los produce). Cuando la
+    IA publica `identity_summary`, el Front usa ese resumen canónico para
+    personas físicas; no se sustituye este campo para no romper consumidores
+    antiguos. El video temporal se borra al terminar el stream o si algo falla
+    (finally).
     """
     if lap_episode_mode not in {"off", "shadow"}:
         raise ValueError("LAP_EPISODE_MODE debe ser off o shadow.")
@@ -123,7 +126,7 @@ def _sse_detect(
         if lap_episode_mode == "shadow"
         else None
     )
-    seen_ids = set()
+    seen_track_ids = set()
     sse_started = time.perf_counter()
     first_event_at = None
     serialized_bytes = 0
@@ -137,8 +140,8 @@ def _sse_detect(
         # uploads concurrentes no comparten IDs ni requieren un lock global.
         for frame in detector.stream(video_path):
             for box in frame.get("boxes", []):
-                seen_ids.add(box.get("id"))
-            frame["count"] = len(seen_ids)
+                seen_track_ids.add(box.get("id"))
+            frame["count"] = len(seen_track_ids)
             if reducer is not None:
                 decisions = reducer.observe(frame.get("lap_scores"))
                 if decisions:

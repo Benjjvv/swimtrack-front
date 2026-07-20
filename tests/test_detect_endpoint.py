@@ -80,6 +80,30 @@ class FakeLapDetector:
             }
 
 
+class FakeCanonicalIdentityDetector:
+    def stream(self, _video_path):
+        for time, track_id in ((0.0, 3), (0.5, 4), (1.0, 18)):
+            yield {
+                "time": time,
+                "width": 40,
+                "height": 20,
+                "boxes": [
+                    {
+                        "id": track_id,
+                        "track_id": track_id,
+                        "identity_id": 1,
+                        "lane_id": "center",
+                        "x1": 1,
+                        "y1": 2,
+                        "x2": 10,
+                        "y2": 12,
+                        "conf": 0.9,
+                    }
+                ],
+                "identity_summary": {"confirmed_count": 1, "active_count": 1},
+            }
+
+
 def _events(response):
     return [
         json.loads(chunk.removeprefix("data: "))
@@ -107,6 +131,26 @@ def test_detect_preserves_sse_contract_and_removes_upload():
     assert frames[0]["lap_scores"][0]["score_version"] == "trajectory-v5"
     assert detector.existed_during_stream
     assert not os.path.exists(detector.video_path)
+
+
+def test_detect_retransmits_canonical_identity_without_changing_legacy_tracklet_count():
+    app = create_app(
+        {"TESTING": True, "URL_PREFIX": "/"},
+        detector=FakeCanonicalIdentityDetector(),
+    )
+
+    with app.test_client() as client:
+        response = client.post(
+            "/api/detect",
+            data={"video": (io.BytesIO(b"fake-video"), "sample.mp4")},
+            content_type="multipart/form-data",
+        )
+        frames = _events(response)
+        response.close()
+
+    assert [frame["count"] for frame in frames] == [1, 2, 3]
+    assert [frame["identity_summary"]["confirmed_count"] for frame in frames] == [1, 1, 1]
+    assert [frame["boxes"][0]["identity_id"] for frame in frames] == [1, 1, 1]
 
 
 def test_detect_logs_safe_upload_and_sse_timings(caplog):

@@ -11,8 +11,9 @@ def _score(
     candidate_episode_id=1,
     score_version="trajectory-v5",
     endpoint="near",
+    identity_id=None,
 ):
-    return {
+    result = {
         "lane_id": lane_id,
         "candidate_episode_id": candidate_episode_id,
         "candidate_time_ms": candidate_time_ms,
@@ -20,6 +21,9 @@ def _score(
         "score_version": score_version,
         "endpoint": endpoint,
     }
+    if identity_id is not None:
+        result["identity_id"] = identity_id
+    return result
 
 
 def test_reducer_keeps_maximum_with_its_time_and_emits_once():
@@ -74,6 +78,23 @@ def test_reducer_keys_episodes_by_lane_and_id_without_temporal_deduplication():
         for decision in decisions
     ] == [("center", 1), ("center", 2), ("left", 1)]
     assert len(reducer.snapshot()) == 3
+
+
+def test_reducer_keeps_same_episode_number_for_two_identities_separate():
+    reducer = LapEpisodeReducer(0.5)
+
+    decisions = reducer.observe(
+        [
+            _score(0.8, 1_000.0, identity_id=1),
+            _score(0.9, 1_001.0, identity_id=2),
+        ]
+    )
+
+    assert [(decision["identity_id"], decision["candidate_episode_id"]) for decision in decisions] == [
+        (1, 1),
+        (2, 1),
+    ]
+    assert len(reducer.snapshot()) == 2
 
 
 def test_unconfigured_threshold_collects_episodes_without_classifying():

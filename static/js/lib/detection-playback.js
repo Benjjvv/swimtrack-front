@@ -1,7 +1,7 @@
 // Reproducción de detecciones sincronizadas con un <video> subido.
 //
 // Sube el video a POST /api/detect y consume el stream SSE (un evento por frame,
-// contrato: {time, width, height, boxes, count}). Cada frame se acumula en
+// contrato: {time, width, height, boxes, identity_summary?, count}). Cada frame se acumula en
 // this.frames y el DIBUJO se sincroniza con el frame efectivamente presentado por
 // el <video> mediante requestVideoFrameCallback. En navegadores que no exponen
 // ese API usamos timeupdate como fallback. Se muestra el frame cuyo `time`
@@ -58,7 +58,9 @@ const DETECTION_PERSISTENCE_SECONDS = 1.5;
  */
 function toDetection(box, scale, offX, offY) {
   return {
-    id: box.id,
+    // ByteTrack puede cambiar `id` cuando recupera a un nadador. La identidad
+    // canónica mantiene estelas e interpolación continuas durante ese cambio.
+    id: box.identity_id ?? box.id,
     bbox: [
       offX + box.x1 * scale,
       offY + box.y1 * scale,
@@ -86,7 +88,7 @@ export class DetectionPlayback {
   /**
    * @param {HTMLVideoElement} video
    * @param {HTMLCanvasElement} canvas
-   * @param {(count:number)=>void} [onCount] callback con el count del frame.
+   * @param {(count:number)=>void} [onCount] callback con personas canónicas confirmadas.
    * @param {(isBuffering:boolean)=>void} [onBufferingChange] actualiza la UI de espera.
    * @param {(telemetry:{reason:string,bufferAhead:number,pauseThreshold:number,resumeThreshold:number,initialThreshold:number,rebufferCount:number,arrivalGapP90:number,streamDone:boolean})=>void} [onBufferTelemetry] actualiza el detalle de espera.
    * @param {(count:number)=>void} [onLapCount] actualiza las vueltas detectadas en shadow mode.
@@ -98,7 +100,7 @@ export class DetectionPlayback {
     this.onBufferingChange = onBufferingChange || (() => {});
     this.onBufferTelemetry = onBufferTelemetry || (() => {});
     this.onLapCount = onLapCount || (() => {});
-    /** @type {Array<{time:number,width:number,height:number,boxes:any[],count:number}>} */
+    /** @type {Array<{time:number,width:number,height:number,boxes:any[],count:number,identity_summary?:{confirmed_count:number,active_count:number}}>} */
     this.frames = [];
     this._onTimeUpdate = null;
     this._onSeeked = null;
@@ -585,11 +587,18 @@ export class DetectionPlayback {
     drawDetections(this.canvas, { videoWidth: elW, videoHeight: elH }, dets, {
       overlay: this._overlay,
     });
-    // El count del contrato es monótono dentro de una pasada. Se reinicia al
-    // volver el video al inicio para reflejar la nueva repetición del clip.
-    const count = typeof frame.count === 'number' ? frame.count : dets.length;
-    this._maxCount = Math.max(this._maxCount, count);
-    this.onCount(this._maxCount);
+    // El resumen canónico cuenta personas físicas, mientras que `count` es el
+    // legacy acumulado de tracklets ByteTrack. Si la IA aún no publica el nuevo
+    // resumen, degradamos a las personas visibles de este frame, nunca al
+    // acumulado histórico de IDs efímeros.
+    const confirmedCount = frame.identity_summary?.confirmed_count;
+    if (Number.isInteger(confirmedCount) && confirmedCount >= 0) {
+      this._maxCount = Math.max(this._maxCount, confirmedCount);
+      this.onCount(this._maxCount);
+    } else {
+      this._maxCount = dets.length;
+      this.onCount(dets.length);
+    }
     this.onLapCount(this._lapCountAt(this._presentedVideoTime));
   }
 
@@ -599,9 +608,11 @@ export class DetectionPlayback {
       if (!Number.isFinite(frame.time) || frame.time > time) continue;
       for (const decision of frame.lap_decisions || []) {
         const laneId = decision?.lane_id;
+        const identityId = decision?.identity_id;
         const episodeId = decision?.candidate_episode_id;
         if (typeof laneId !== 'string' || !Number.isInteger(episodeId) || episodeId < 1) continue;
-        episodeKeys.add(`${laneId}:${episodeId}`);
+        const identityKey = Number.isInteger(identityId) && identityId > 0 ? identityId : 'legacy';
+        episodeKeys.add(`${laneId}:${identityKey}:${episodeId}`);
       }
     }
     return episodeKeys.size;
@@ -632,13 +643,15 @@ export class DetectionPlayback {
 
     const nextById = new Map();
     for (const box of next.boxes) {
-      if (box && box.id !== undefined && box.id !== null) nextById.set(String(box.id), box);
+      const identityKey = box?.identity_id ?? box?.id;
+      if (identityKey !== undefined && identityKey !== null) nextById.set(String(identityKey), box);
     }
     const factor = clamp((t - previous.time) / span, 0, 1);
     let changed = false;
     const boxes = previous.boxes.map((box) => {
-      if (!box || box.id === undefined || box.id === null) return box;
-      const target = nextById.get(String(box.id));
+      const identityKey = box?.identity_id ?? box?.id;
+      if (identityKey === undefined || identityKey === null) return box;
+      const target = nextById.get(String(identityKey));
       if (!target) return box;
       const fields = ['x1', 'y1', 'x2', 'y2', 'conf'];
       if (!fields.every((field) => Number.isFinite(box[field]) && Number.isFinite(target[field]))) {
