@@ -146,7 +146,8 @@ function drawTrails(ctx, overlay, lineWidth) {
  * @param {HTMLVideoElement|HTMLImageElement|null} source
  * @param {Detection[]} detections
  * @param {{overlay?: {trails: Map<string, Array<{x:number,y:number}>>}, settings?: {
- *   showValues?: boolean, showSwimmerIds?: boolean, showCenters?: boolean, showTrails?: boolean}}} [options]
+ *   showValues?: boolean, showSwimmerIds?: boolean, showTimestamp?: boolean, showCenters?: boolean, showTrails?: boolean},
+ *   timestampSeconds?: number, timestampFps?: number}} [options]
  */
 export function drawDetections(canvas, source, detections, options = {}) {
   const srcW = (source && (source.videoWidth || source.naturalWidth)) || 1280;
@@ -208,4 +209,21 @@ export function drawDetections(canvas, source, detections, options = {}) {
       ctx.stroke();
     }
   });
+
+  if (settings.showTimestamp && Number.isFinite(options.timestampSeconds)) {
+    const fps = Number.isFinite(options.timestampFps) && options.timestampFps > 0 ? options.timestampFps : 30;
+    const totalFrames = Math.max(0, Math.floor(options.timestampSeconds * fps + 1e-6));
+    const framesPerSecond = Math.round(fps);
+    const minutes = Math.floor(totalFrames / (framesPerSecond * 60));
+    const seconds = Math.floor(totalFrames / framesPerSecond) % 60;
+    const frames = totalFrames % framesPerSecond;
+    const timestamp = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(frames).padStart(2, '0')}`;
+    const padding = Math.max(6, Math.round(fontPx * 0.35));
+    const width = ctx.measureText(timestamp).width + padding * 2;
+    const height = fontPx + padding * 2;
+    ctx.fillStyle = 'rgb(3 18 10 / 0.78)';
+    ctx.fillRect(Math.max(0, srcW - width - padding), padding, width, height);
+    ctx.fillStyle = '#f8fafc';
+    ctx.fillText(timestamp, Math.max(0, srcW - width), padding * 2);
+  }
 }

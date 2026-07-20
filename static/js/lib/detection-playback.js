@@ -589,6 +589,11 @@ export class DetectionPlayback {
     const dets = (frame.boxes || []).map((b) => toDetection(b, scale, offX, offY));
     drawDetections(this.canvas, { videoWidth: elW, videoHeight: elH }, dets, {
       overlay: this._overlay,
+      // El reloj de media vuelve a cero en cada loop; por eso el timestamp y
+      // el número de cuadro también reinician con el video, igual que cajas y
+      // contadores.
+      timestampSeconds: this._presentedVideoTime,
+      timestampFps: 30,
     });
     // El resumen canónico cuenta personas físicas, mientras que `count` es el
     // legacy acumulado de tracklets ByteTrack. Si la IA aún no publica el nuevo
