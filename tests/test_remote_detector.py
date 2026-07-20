@@ -178,7 +178,12 @@ class FakeVisionClient:
                 ]
             if self.include_identity_data:
                 response_frame["boxes"][0].update(
-                    {"lane_id": "center", "track_id": 7, "identity_id": 1}
+                    {
+                        "lane_id": "center",
+                        "track_id": 7,
+                        "identity_id": 1,
+                        "swimmer_id": 1,
+                    }
                 )
                 response_frame["identity_summary"] = {
                     "confirmed_count": 1,
@@ -377,6 +382,7 @@ def test_stream_preserves_canonical_identity_fields(monkeypatch):
             "lane_id": "center",
             "track_id": 7,
             "identity_id": 1,
+            "swimmer_id": 1,
         }
     ]
     assert results[0]["identity_summary"] == {"confirmed_count": 1, "active_count": 1}

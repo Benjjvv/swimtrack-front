@@ -146,7 +146,7 @@ function canonicalMovingFrame(time, x, rawId) {
     height: 640,
     count: rawId,
     identity_summary: { confirmed_count: 1, active_count: 1 },
-    boxes: [{ id: rawId, identity_id: 1, x1: x, y1: 20, x2: x + 60, y2: 120, conf: 0.9 }],
+    boxes: [{ id: rawId, identity_id: 1, swimmer_id: 1, x1: x, y1: 20, x2: x + 60, y2: 120, conf: 0.9 }],
   };
 }
 

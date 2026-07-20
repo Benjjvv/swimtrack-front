@@ -1055,7 +1055,7 @@ class RemoteSwimmerDetector:
             if not isinstance(lane_id, str) or not lane_id:
                 raise RemoteDetectorError("La respuesta IA contiene un lane_id de bbox inválido.")
             normalized["lane_id"] = lane_id
-        for field in ("track_id", "identity_id"):
+        for field in ("track_id", "identity_id", "swimmer_id"):
             value = box.get(field)
             if value is None:
                 continue

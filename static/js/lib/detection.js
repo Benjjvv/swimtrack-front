@@ -8,7 +8,7 @@ import { getBoxDebugSettings } from './debug-settings.js';
  * @property {[number,number,number,number]} bbox - [x, y, w, h] en px de la fuente.
  * @property {number} score
  * @property {string} class
- * @property {number} [identityId] identidad canónica del nadador remoto.
+ * @property {number} [swimmerId] ordinal visible del nadador remoto confirmado.
  */
 
 const TF_URL = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js';
@@ -179,8 +179,8 @@ export function drawDetections(canvas, source, detections, options = {}) {
     ctx.strokeRect(x, y, w, h);
 
     const labelParts = [];
-    if (settings.showSwimmerIds && Number.isInteger(d.identityId) && d.identityId > 0) {
-      labelParts.push(`Nadador #${d.identityId}`);
+    if (settings.showSwimmerIds && Number.isInteger(d.swimmerId) && d.swimmerId > 0) {
+      labelParts.push(`Nadador #${d.swimmerId}`);
     }
     if (settings.showValues) labelParts.push(`${Math.round((d.score || 0) * 100)}%`);
     if (labelParts.length) {
