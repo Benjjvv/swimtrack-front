@@ -8,6 +8,7 @@ import { getBoxDebugSettings } from './debug-settings.js';
  * @property {[number,number,number,number]} bbox - [x, y, w, h] en px de la fuente.
  * @property {number} score
  * @property {string} class
+ * @property {number} [identityId] identidad canónica del nadador remoto.
  */
 
 const TF_URL = 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.20.0/dist/tf.min.js';
@@ -145,7 +146,7 @@ function drawTrails(ctx, overlay, lineWidth) {
  * @param {HTMLVideoElement|HTMLImageElement|null} source
  * @param {Detection[]} detections
  * @param {{overlay?: {trails: Map<string, Array<{x:number,y:number}>>}, settings?: {
- *   showValues?: boolean, showCenters?: boolean, showTrails?: boolean}}} [options]
+ *   showValues?: boolean, showSwimmerIds?: boolean, showCenters?: boolean, showTrails?: boolean}}} [options]
  */
 export function drawDetections(canvas, source, detections, options = {}) {
   const srcW = (source && (source.videoWidth || source.naturalWidth)) || 1280;
@@ -177,8 +178,13 @@ export function drawDetections(canvas, source, detections, options = {}) {
     ctx.lineWidth = lineWidth;
     ctx.strokeRect(x, y, w, h);
 
-    if (settings.showValues) {
-      const label = `${Math.round((d.score || 0) * 100)}%`;
+    const labelParts = [];
+    if (settings.showSwimmerIds && Number.isInteger(d.identityId) && d.identityId > 0) {
+      labelParts.push(`Nadador #${d.identityId}`);
+    }
+    if (settings.showValues) labelParts.push(`${Math.round((d.score || 0) * 100)}%`);
+    if (labelParts.length) {
+      const label = labelParts.join(' · ');
       const th = fontPx + 6;
       const tw = ctx.measureText(label).width + 8;
       const labelY = Math.max(0, y - th);

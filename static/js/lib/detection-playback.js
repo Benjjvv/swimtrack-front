@@ -51,7 +51,7 @@ const DETECTION_PERSISTENCE_SECONDS = 1.5;
  * hace `object-fit: cover` del <video>: escala uniforme + offset de centrado.
  * Así las cajas coinciden con el contenido visible para cualquier relación de
  * aspecto (con la IA real, frame.width/height = dims del video original).
- * @param {{id:number,x1:number,y1:number,x2:number,y2:number,conf:number}} box
+ * @param {{id:number,identity_id?:number,x1:number,y1:number,x2:number,y2:number,conf:number}} box
  * @param {number} scale factor uniforme
  * @param {number} offX  desplazamiento horizontal (px de pantalla)
  * @param {number} offY  desplazamiento vertical
@@ -61,6 +61,7 @@ function toDetection(box, scale, offX, offY) {
     // ByteTrack puede cambiar `id` cuando recupera a un nadador. La identidad
     // canónica mantiene estelas e interpolación continuas durante ese cambio.
     id: box.identity_id ?? box.id,
+    identityId: box.identity_id,
     bbox: [
       offX + box.x1 * scale,
       offY + box.y1 * scale,

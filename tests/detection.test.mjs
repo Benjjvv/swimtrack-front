@@ -42,6 +42,18 @@ test('renders only the confidence percentage in each detection label', () => {
   assert.deepEqual(canvas.labels, ['92%', '0%']);
 });
 
+test('renders the canonical swimmer identity only when the Debug setting enables it', () => {
+  const canvas = fakeCanvas();
+  const settings = { showValues: true, showSwimmerIds: true, showCenters: false, showTrails: false };
+
+  drawDetections(canvas, { videoWidth: 640, videoHeight: 480 }, [
+    { id: 44, identityId: 2, bbox: [10, 20, 30, 40], score: 0.917, class: 'person' },
+    { id: 45, bbox: [50, 60, 70, 80], score: 0.5, class: 'person' },
+  ], { settings });
+
+  assert.deepEqual(canvas.labels, ['Nadador #2 · 92%', '50%']);
+});
+
 test('can draw center crosses and trails without showing box values', () => {
   const canvas = fakeCanvas();
   const overlay = createDetectionOverlayState();

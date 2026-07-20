@@ -5,6 +5,7 @@ const STORAGE_KEY = 'swimtrack-box-debug-settings';
 
 export const DEFAULT_BOX_DEBUG_SETTINGS = Object.freeze({
   showValues: true,
+  showSwimmerIds: false,
   showCenters: false,
   showTrails: false,
   lapConfidenceThreshold: 0.2,
@@ -24,6 +25,8 @@ export function normalizeBoxDebugSettings(value) {
   return {
     showValues: typeof value?.showValues === 'boolean'
       ? value.showValues : DEFAULT_BOX_DEBUG_SETTINGS.showValues,
+    showSwimmerIds: typeof value?.showSwimmerIds === 'boolean'
+      ? value.showSwimmerIds : DEFAULT_BOX_DEBUG_SETTINGS.showSwimmerIds,
     showCenters: typeof value?.showCenters === 'boolean'
       ? value.showCenters : DEFAULT_BOX_DEBUG_SETTINGS.showCenters,
     showTrails: typeof value?.showTrails === 'boolean'

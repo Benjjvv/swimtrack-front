@@ -18,6 +18,7 @@ function memoryStorage() {
 test('uses the current visualization and lap threshold as the default Debug configuration', () => {
   assert.deepEqual(DEFAULT_BOX_DEBUG_SETTINGS, {
     showValues: true,
+    showSwimmerIds: false,
     showCenters: false,
     showTrails: false,
     lapConfidenceThreshold: 0.2,
@@ -29,12 +30,14 @@ test('persists Debug checkboxes and the lap threshold independently', () => {
   const storage = memoryStorage();
   const saved = saveBoxDebugSettings({
     showCenters: true,
+    showSwimmerIds: true,
     showTrails: true,
     lapConfidenceThreshold: '0.7',
   }, storage);
 
   assert.deepEqual(saved, {
     showValues: true,
+    showSwimmerIds: true,
     showCenters: true,
     showTrails: true,
     lapConfidenceThreshold: 0.7,
